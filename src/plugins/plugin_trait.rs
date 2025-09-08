@@ -54,6 +54,7 @@ pub struct PluginConfig {
     pub enabled: bool,
     pub timeout_seconds: u64,
     pub max_retries: u32,
+    pub min_cvss: f32,
     pub custom_settings: HashMap<String, String>,
 }
 
@@ -63,6 +64,7 @@ impl Default for PluginConfig {
             enabled: true,
             timeout_seconds: 30,
             max_retries: 1,
+            min_cvss: 0.0,
             custom_settings: HashMap::new(),
         }
     }

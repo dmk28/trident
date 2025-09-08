@@ -60,13 +60,13 @@ impl EvasionEngine {
 
     /// Generate random IPv4 address avoiding reserved ranges
     pub fn generate_random_ipv4() -> Ipv4Addr {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         loop {
-            let a = rng.gen_range(1..=223); // Avoid 0.x.x.x and 224+ (multicast)
-            let b = rng.gen_range(0..=255);
-            let c = rng.gen_range(0..=255);
-            let d = rng.gen_range(1..=254); // Avoid .0 and .255
+            let a = rng.random_range(1..=223); // Avoid 0.x.x.x and 224+ (multicast)
+            let b = rng.random_range(0..=255);
+            let c = rng.random_range(0..=255);
+            let d = rng.random_range(1..=254); // Avoid .0 and .255
 
             let ip = Ipv4Addr::new(a, b, c, d);
 
@@ -81,18 +81,18 @@ impl EvasionEngine {
 
     /// Generate random IPv6 address in global unicast range
     pub fn generate_random_ipv6() -> Ipv6Addr {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Generate in 2000::/3 global unicast range
         let segments: [u16; 8] = [
-            rng.gen_range(0x2000..=0x3fff), // First segment in global unicast
-            rng.r#gen::<u16>(),
-            rng.r#gen::<u16>(),
-            rng.r#gen::<u16>(),
-            rng.r#gen::<u16>(),
-            rng.r#gen::<u16>(),
-            rng.r#gen::<u16>(),
-            rng.gen_range(1..=0xfffe), // Avoid all zeros in last segment
+            rng.random_range(0x2000..=0x3fff), // First segment in global unicast
+            rng.random::<u16>(),
+            rng.random::<u16>(),
+            rng.random::<u16>(),
+            rng.random::<u16>(),
+            rng.random::<u16>(),
+            rng.random::<u16>(),
+            rng.random_range(1..=0xfffe), // Avoid all zeros in last segment
         ];
 
         Ipv6Addr::from(segments)
@@ -118,7 +118,7 @@ impl EvasionEngine {
         let mut decoys = Vec::with_capacity(self.config.decoy_count);
 
         for _ in 0..self.config.decoy_count {
-            let ip = if self.config.use_ipv6 && rand::thread_rng().gen_bool(0.3) {
+            let ip = if self.config.use_ipv6 && rand::rng().random_bool(0.3) {
                 IpAddr::V6(Self::generate_random_ipv6())
             } else {
                 IpAddr::V4(Self::generate_random_ipv4())
@@ -185,15 +185,15 @@ impl EvasionEngine {
 
     /// Generate random source port, avoiding reserved ranges
     pub fn generate_source_port() -> u16 {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Prefer ephemeral port range (32768-65535) but occasionally use "trusted" ports
-        if rng.gen_bool(0.8) {
-            rng.gen_range(32768..=65535)
+        if rng.random_bool(0.8) {
+            rng.random_range(32768..=65535)
         } else {
             // Use commonly trusted ports
             let trusted_ports = [53, 80, 443, 993, 995];
-            trusted_ports[rng.gen_range(0..trusted_ports.len())]
+            trusted_ports[rng.random_range(0..trusted_ports.len())]
         }
     }
 }

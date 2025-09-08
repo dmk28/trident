@@ -24,7 +24,6 @@ pub struct ScanResult {
     pub ip: Option<IpAddr>,
     pub service: Option<String>,
     pub banner: Option<String>,
-    pub ttl: Option<u8>,
 }
 
 #[derive(Debug, Clone)]

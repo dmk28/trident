@@ -1,13 +1,12 @@
 use pnet::packet::Packet;
-use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Flags, MutableIpv4Packet};
 use pnet::packet::ipv6::MutableIpv6Packet;
 use pnet::packet::tcp::{MutableTcpPacket, TcpFlags};
 use pnet::util;
-use pnet_transport::{TransportChannelType, TransportProtocol, TransportSender, transport_channel};
+use pnet_transport::{TransportChannelType, TransportSender, transport_channel};
 use rand::Rng;
-use rand::SeedableRng;
-use rayon::prelude::*;
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{
     Arc,
@@ -245,7 +244,7 @@ impl DecoyGenerator {
             }
 
             // Random delay between packets (1-100ms)
-            let delay = rng.gen_range(1..=100);
+            let delay = rng.random_range(1..=100);
             sleep(Duration::from_millis(delay)).await;
         }
         // Randomize order to hide the real scan
@@ -271,7 +270,7 @@ impl DecoyGenerator {
             }
 
             // Random delay between packets (1-100ms)
-            let delay = rng.gen_range(1..=100);
+            let delay = rng.random_range(1..=100);
             sleep(Duration::from_millis(delay)).await;
         }
         */
@@ -450,8 +449,8 @@ impl DecoyGenerator {
 
     /// Generate a random source port
     fn generate_random_port() -> u16 {
-        let mut rng = rand::thread_rng();
-        rng.gen_range(32768..=65535)
+        let mut rng = rand::rng();
+        rng.random_range(32768..=65535)
     }
 
     /// Check if raw sockets are available

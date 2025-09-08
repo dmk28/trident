@@ -13,7 +13,7 @@ use plugins::{
     ExecutionMode, PluginManager, service_detection::ServiceDetectionPlugin,
     vulnerability_scanner::VulnerabilityPlugin,
 };
-use scanner::{ConnectScanner, EvasiveScannerWrapper, ScanConfig, parse_port_range};
+use scanner::{ConnectScanner, EvasiveScannerWrapper, ScanConfig, UdpScanner, parse_port_range};
 use std::sync::Arc;
 
 use crate::domain_resolver::resolve_ip;
@@ -80,6 +80,8 @@ enum ScanType {
     Syn,
     /// TCP connect scan
     Connect,
+    /// UDP scan
+    Udp,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -307,6 +309,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .scan_tcp(destination_ip, ports_to_scan.clone())
                 .await?;
             results
+        }
+        ScanType::Udp => {
+            println!("🚀 Starting UDP scan...");
+            let config = ScanConfig::new(
+                destination_ip,
+                ports_to_scan.clone(),
+                interface_ip,
+                args.timeout,
+            );
+            let mut scanner = UdpScanner::new(config);
+            scanner.scan()?
         }
     };
 

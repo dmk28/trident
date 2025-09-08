@@ -24,20 +24,20 @@ impl IpSpoofer {
 
     /// Generate a source port that might bypass filtering
     pub fn generate_trusted_source_port(&self) -> u16 {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // 70% chance to use trusted port, 30% chance for high ephemeral port
-        if rng.gen_bool(0.7) && !self.trusted_ports.is_empty() {
-            self.trusted_ports[rng.gen_range(0..self.trusted_ports.len())]
+        if rng.random_bool(0.7) && !self.trusted_ports.is_empty() {
+            self.trusted_ports[rng.random_range(0..self.trusted_ports.len())]
         } else {
             // Use high ephemeral ports that some systems trust
-            rng.gen_range(49152..=65535)
+            rng.random_range(49152..=65535)
         }
     }
 
     /// Generate source IP that appears to be from a different geographic region
     pub fn generate_geographic_decoy_ip(&self, region: GeographicRegion) -> IpAddr {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         match region {
             GeographicRegion::NorthAmerica => {
@@ -48,40 +48,40 @@ impl IpSpoofer {
                     (4, 4, 4, 0),      // Level3
                     (208, 67, 222, 0), // OpenDNS
                 ];
-                let base = ranges[rng.gen_range(0..ranges.len())];
+                let base = ranges[rng.random_range(0..ranges.len())];
                 IpAddr::V4(Ipv4Addr::new(
                     base.0,
                     base.1,
                     base.2,
-                    rng.gen_range(1..=254),
+                    rng.random_range(1..=254),
                 ))
             }
             GeographicRegion::Europe => {
                 // European IP ranges
                 IpAddr::V4(Ipv4Addr::new(
-                    rng.gen_range(80..=95),
-                    rng.gen_range(1..=255),
-                    rng.gen_range(1..=255),
-                    rng.gen_range(1..=254),
+                    rng.random_range(80..=95),
+                    rng.random_range(1..=255),
+                    rng.random_range(1..=255),
+                    rng.random_range(1..=254),
                 ))
             }
             GeographicRegion::Asia => {
                 // Asian IP ranges
                 IpAddr::V4(Ipv4Addr::new(
-                    rng.gen_range(110..=125),
-                    rng.gen_range(1..=255),
-                    rng.gen_range(1..=255),
-                    rng.gen_range(1..=254),
+                    rng.random_range(110..=125),
+                    rng.random_range(1..=255),
+                    rng.random_range(1..=255),
+                    rng.random_range(1..=254),
                 ))
             }
             GeographicRegion::Random => {
                 // Completely random but valid public IP
                 loop {
                     let ip = Ipv4Addr::new(
-                        rng.gen_range(1..=223),
-                        rng.gen_range(0..=255),
-                        rng.gen_range(0..=255),
-                        rng.gen_range(1..=254),
+                        rng.random_range(1..=223),
+                        rng.random_range(0..=255),
+                        rng.random_range(0..=255),
+                        rng.random_range(1..=254),
                     );
 
                     if !self.is_private_or_reserved(&ip) {
@@ -89,6 +89,96 @@ impl IpSpoofer {
                     }
                 }
             }
+        }
+    }
+
+    /// Generate IPv6 decoy IP addresses that appear to be from different geographic regions
+    pub fn generate_geographic_decoy_ipv6(&self, region: GeographicRegion) -> IpAddr {
+        let mut rng = rand::rng();
+
+        match region {
+            GeographicRegion::NorthAmerica => {
+                // North American IPv6 ranges (simplified examples)
+                let prefixes = [
+                    0x2001, 0x2600, 0x2610, // Various North American allocations
+                ];
+                let prefix = prefixes[rng.random_range(0..prefixes.len())];
+
+                IpAddr::V6(Ipv6Addr::new(
+                    prefix,
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0001..=0xFFFE), // Avoid all zeros
+                ))
+            }
+            GeographicRegion::Europe => {
+                // European IPv6 ranges
+                let prefixes = [
+                    0x2001, 0x2a00, 0x2a01, 0x2a02, 0x2a03, // RIPE NCC allocations
+                ];
+                let prefix = prefixes[rng.random_range(0..prefixes.len())];
+
+                IpAddr::V6(Ipv6Addr::new(
+                    prefix,
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0001..=0xFFFE),
+                ))
+            }
+            GeographicRegion::Asia => {
+                // Asian IPv6 ranges
+                let prefixes = [
+                    0x2001, 0x2400, 0x2401, 0x240a, // APNIC allocations
+                ];
+                let prefix = prefixes[rng.random_range(0..prefixes.len())];
+
+                IpAddr::V6(Ipv6Addr::new(
+                    prefix,
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0001..=0xFFFE),
+                ))
+            }
+            GeographicRegion::Random => {
+                // Random global unicast IPv6 address in 2000::/3
+                IpAddr::V6(Ipv6Addr::new(
+                    rng.random_range(0x2000..=0x3FFF), // Global unicast range
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0000..=0xFFFF),
+                    rng.random_range(0x0001..=0xFFFE),
+                ))
+            }
+        }
+    }
+
+    /// Generate either IPv4 or IPv6 geographic decoy IP with specified probability
+    pub fn generate_mixed_geographic_decoy(
+        &self,
+        region: GeographicRegion,
+        ipv6_probability: f64,
+    ) -> IpAddr {
+        let mut rng = rand::rng();
+
+        if rng.random_bool(ipv6_probability) {
+            self.generate_geographic_decoy_ipv6(region)
+        } else {
+            self.generate_geographic_decoy_ip(region)
         }
     }
 
@@ -129,20 +219,20 @@ impl IpSpoofer {
 
     /// Generate realistic TTL values that might match different OS types
     fn generate_realistic_ttl(&self) -> u8 {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Common OS TTL values
         let common_ttls = [64, 128, 255, 60, 30];
-        common_ttls[rng.gen_range(0..common_ttls.len())]
+        common_ttls[rng.random_range(0..common_ttls.len())]
     }
 
     /// Generate realistic TCP window sizes
     fn generate_realistic_window_size(&self) -> u16 {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Common window sizes
         let common_windows = [1024, 2048, 4096, 8192, 16384, 32768, 65535];
-        common_windows[rng.gen_range(0..common_windows.len())]
+        common_windows[rng.random_range(0..common_windows.len())]
     }
 }
 

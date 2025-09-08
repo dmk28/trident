@@ -94,7 +94,6 @@ impl ConnectScanner {
             service: None,
             banner: None,
             response_time: start_time.elapsed(),
-            ttl: None,
             timestamp: SystemTime::now(),
         }
     }

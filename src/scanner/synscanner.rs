@@ -209,9 +209,8 @@ impl SynScanner {
             timestamp: SystemTime::now(),
             response_time: Duration::from_millis(0),
             ip: Some(ip_addr),
-            service: None, // TODO: Calculate actual response time
+            service: None,
             banner: None,
-            ttl: None,
         };
 
         results.lock().unwrap().push(result);

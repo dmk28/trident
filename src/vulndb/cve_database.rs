@@ -1054,24 +1054,86 @@ impl CveDatabase {
     }
 
     /// Search for vulnerabilities and return formatted results with 140-char explanations
-    pub fn search_vulnerabilities(&self, service: &str, version: &str) -> Vec<VulnerabilityMatch> {
+    pub fn search_vulnerabilities(
+        &self,
+        service: &str,
+        version: Option<&str>,
+        cpe: Option<&str>,
+        min_cvss: f32,
+    ) -> Vec<VulnerabilityMatch> {
         let mut results = Vec::new();
 
-        if let Some(service_vulns) = self.get_service_vulnerabilities(service) {
-            for service_vuln in service_vulns {
-                for cve in &service_vuln.cves {
-                    if cve.affected_versions.iter().any(|v| version.contains(v)) {
-                        let vulnerability_match = self.create_vulnerability_match(
-                            cve, service, version,
-                            0.85, // Default confidence for direct version match
-                        );
-                        results.push(vulnerability_match);
+        // First, try CPE matching if provided (higher priority like Nmap)
+        if let Some(cpe_str) = cpe {
+            // Parse CPE to extract vendor/product for better matching
+            if let Some((cpe_vendor, cpe_product)) = self.parse_cpe_for_matching(cpe_str) {
+                let cpe_service = format!("{}:{}", cpe_vendor, cpe_product);
+                if let Some(service_vulns) = self.get_service_vulnerabilities(&cpe_service) {
+                    for service_vuln in service_vulns {
+                        for cve in &service_vuln.cves {
+                            if cve.cvss_score >= min_cvss {
+                                // For CPE matches, check if version matches or assume affected
+                                let version_match = if let Some(vers) = version {
+                                    cve.affected_versions.iter().any(|v| vers.contains(v))
+                                } else {
+                                    true // If no version, still include but lower confidence
+                                };
+                                if version_match {
+                                    let vulnerability_match = self.create_vulnerability_match(
+                                        cve,
+                                        &cpe_service,
+                                        version.unwrap_or("unknown"),
+                                        0.95, // Higher confidence for CPE match
+                                    );
+                                    results.push(vulnerability_match);
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
+        // Fallback to service/version matching
+        if results.is_empty() {
+            if let Some(vers) = version {
+                if let Some(service_vulns) = self.get_service_vulnerabilities(service) {
+                    for service_vuln in service_vulns {
+                        for cve in &service_vuln.cves {
+                            if cve.cvss_score >= min_cvss
+                                && cve.affected_versions.iter().any(|v| vers.contains(v))
+                            {
+                                let vulnerability_match = self.create_vulnerability_match(
+                                    cve, service, vers,
+                                    0.85, // Default confidence for service/version match
+                                );
+                                results.push(vulnerability_match);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by CVSS score descending (highest first, like Nmap)
+        results.sort_by(|a, b| {
+            b.cvss_score
+                .partial_cmp(&a.cvss_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         results
+    }
+
+    /// Parse CPE string to extract vendor and product for matching
+    fn parse_cpe_for_matching(&self, cpe: &str) -> Option<(String, String)> {
+        let parts: Vec<&str> = cpe.split(':').collect();
+        if parts.len() >= 5 && parts[0] == "cpe" && parts[1] == "/a" {
+            // cpe:/a:vendor:product:...
+            Some((parts[2].to_string(), parts[3].to_string()))
+        } else {
+            None
+        }
     }
 
     /// Create a VulnerabilityMatch from a CVE with 140-character explanation

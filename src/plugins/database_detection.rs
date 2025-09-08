@@ -339,7 +339,6 @@ mod tests {
             service: None,
             banner: None,
             response_time: std::time::Duration::from_millis(10),
-            ttl: None,
             timestamp: SystemTime::now(),
         };
 
@@ -350,7 +349,6 @@ mod tests {
             service: None,
             banner: None,
             response_time: std::time::Duration::from_millis(1000),
-            ttl: None,
             timestamp: SystemTime::now(),
         };
 
@@ -371,7 +369,6 @@ mod tests {
             service: None,
             banner: None,
             response_time: std::time::Duration::from_millis(10),
-            ttl: None,
             timestamp: SystemTime::now(),
         };
 
@@ -391,6 +388,7 @@ mod tests {
             enabled: true,
             timeout_seconds: 10,
             max_retries: 1,
+            min_cvss: 0.0,
             custom_settings: HashMap::new(),
         };
 
@@ -398,6 +396,7 @@ mod tests {
             enabled: true,
             timeout_seconds: 0,
             max_retries: 1,
+            min_cvss: 0.0,
             custom_settings: HashMap::new(),
         };
 
