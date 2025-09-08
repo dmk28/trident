@@ -49,7 +49,7 @@ impl MSSQLProber {
         let mut message = Vec::new();
 
         // TDS Header (8 bytes)
-        message.extend_from_slice(&[0x12, 0x01, 0x00, 0x13]); // Type, Status, Length (19 bytes)
+        message.extend_from_slice(&[0x12, 0x01, 0x00, 0x14]); // Type, Status, Length (20 bytes)
         message.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]); // SPID, PacketNum, Window
 
         // Token table
@@ -174,8 +174,8 @@ mod tests {
         let prober = MSSQLProber::new();
         let packet = prober.create_mssql_prelogin_packet();
 
-        // Should be exactly 19 bytes
-        assert_eq!(packet.len(), 19);
+        // Should be exactly 20 bytes
+        assert_eq!(packet.len(), 20);
 
         // Should start with TDS prelogin packet type
         assert_eq!(packet[0], 0x12);
@@ -183,9 +183,9 @@ mod tests {
         // Should have correct status
         assert_eq!(packet[1], 0x01);
 
-        // Should have correct length (19 bytes)
+        // Should have correct length (20 bytes)
         assert_eq!(packet[2], 0x00);
-        assert_eq!(packet[3], 0x13);
+        assert_eq!(packet[3], 0x14);
     }
 
     #[test]
