@@ -418,6 +418,82 @@ impl ServiceDetectionPlugin {
 
         findings
     }
+
+    /// Detect RDP (Remote Desktop Protocol) service
+    async fn detect_rdp(&self, ip: IpAddr, port: u16) -> Vec<Finding> {
+        let mut findings = Vec::new();
+
+        // Try to connect to the RDP port and analyze the response
+        match tokio::net::TcpStream::connect((ip, port)).await {
+            Ok(mut stream) => {
+                // RDP connection request (simplified - just check if service responds)
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                // Send a basic RDP connection request
+                let rdp_request = vec![
+                    0x03, 0x00, 0x00, 0x13, // TPKT header
+                    0x0E, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x00, 0x00,
+                    0x00, 0x00,
+                ];
+
+                let mut response = vec![0u8; 1024];
+                let connection_result = tokio::time::timeout(Duration::from_secs(5), async {
+                    stream.write_all(&rdp_request).await?;
+                    let bytes_read = stream.read(&mut response).await?;
+                    Ok::<usize, std::io::Error>(bytes_read)
+                })
+                .await;
+
+                match connection_result {
+                    Ok(Ok(bytes_read)) if bytes_read > 0 => {
+                        // Check if response looks like RDP
+                        if response[0] == 0x03 && response[1] == 0x00 {
+                            let mut finding = Self::create_service_finding("RDP", None, None);
+                            finding.title =
+                                "Service Detected: RDP (Remote Desktop Protocol)".to_string();
+                            finding.description =
+                                "Microsoft Remote Desktop Protocol service detected".to_string();
+                            finding
+                                .metadata
+                                .insert("protocol".to_string(), "RDP".to_string());
+                            finding
+                                .metadata
+                                .insert("standard_port".to_string(), "3389".to_string());
+
+                            // Add security warning
+                            if port == 3389 {
+                                finding.metadata.insert("security_note".to_string(),
+                                    "RDP exposed to network - ensure strong authentication and consider VPN".to_string());
+                            }
+
+                            findings.push(finding);
+                        } else {
+                            // Port is open but doesn't respond like RDP
+                            findings.push(Self::create_service_finding(
+                                "Unknown Service",
+                                None,
+                                None,
+                            ));
+                        }
+                    }
+                    _ => {
+                        // Connection failed or no response - but port is open (from scan results)
+                        findings.push(Self::create_service_finding("Filtered Service", None, None));
+                    }
+                }
+            }
+            Err(_) => {
+                // Connection refused - this shouldn't happen if port scan showed it as open
+                findings.push(Self::create_service_finding(
+                    "Connection Failed",
+                    None,
+                    None,
+                ));
+            }
+        }
+
+        findings
+    }
 }
 
 impl FindingBuilder for ServiceDetectionPlugin {}
@@ -471,6 +547,8 @@ impl Plugin for ServiceDetectionPlugin {
                 all_findings.extend(self.detect_http(target, port).await);
                 all_findings.extend(self.detect_tls_details(target, port).await);
             }
+            // RDP port - Remote Desktop Protocol
+            3389 => all_findings.extend(self.detect_rdp(target, port).await),
             // Database ports - use comprehensive database detection
             3306 | 3307 => all_findings.extend(self.detect_database(target, port).await),
             5432 | 5433 => all_findings.extend(self.detect_database(target, port).await),
