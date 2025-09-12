@@ -47,11 +47,12 @@ fn parse_cidr(cidr: &str) -> Result<Vec<IpAddr>, Box<dyn std::error::Error>> {
 #[command(about = "A comprehensive network scanner and vulnerability detector")]
 #[command(version = "1.0")]
 struct Args {
-    /// Network interface to use for scanning (auto-selected if not specified)
-    interface: Option<String>,
-
     /// Target IP address, hostname, or CIDR range (e.g., 192.168.1.0/24) to scan
     target: String,
+
+    /// Network interface to use for scanning (auto-selected if not specified)
+    #[arg(short = 'i', long)]
+    interface: Option<String>,
 
     /// Port range to scan (e.g., "80", "1-1024", "22,80,443,8080")
     ports: Option<String>,
