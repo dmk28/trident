@@ -50,7 +50,22 @@ impl SynScanner {
         };
 
         let config_clone = self.config.clone();
-        let results_arc = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Pre-populate results for all ports as "Filtered" (no response assumed)
+        let mut initial_results = Vec::new();
+        for &port in &self.config.ports_to_scan {
+            initial_results.push(ScanResult {
+                port,
+                status: PortStatus::Filtered, // Default assumption
+                timestamp: SystemTime::now(),
+                response_time: Duration::from_millis(0),
+                ip: Some(self.config.destination_ip),
+                service: None,
+                banner: None,
+            });
+        }
+
+        let results_arc = Arc::new(std::sync::Mutex::new(initial_results));
 
         let config_rx = config_clone.clone();
         let results_rx = results_arc.clone();
@@ -202,18 +217,15 @@ impl SynScanner {
             PortStatus::Filtered
         };
 
-        // Record the result
-        let result = ScanResult {
-            port,
-            status,
-            timestamp: SystemTime::now(),
-            response_time: Duration::from_millis(0),
-            ip: Some(ip_addr),
-            service: None,
-            banner: None,
-        };
-
-        results.lock().unwrap().push(result);
+        // Update the existing result for this port
+        {
+            let mut results_vec = results.lock().unwrap();
+            if let Some(existing_result) = results_vec.iter_mut().find(|r| r.port == port) {
+                existing_result.status = status;
+                existing_result.timestamp = SystemTime::now();
+                // Could calculate actual response_time here if we tracked send times
+            }
+        }
 
         if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK {
             // For RST response, we need to use the destination port from the incoming packet
