@@ -291,7 +291,24 @@ impl SynScanner {
     ) {
         let start = Instant::now();
         let mut all_sent_time: Option<Instant> = None;
-        let response_timeout = Duration::from_secs(3); // Wait 3 seconds after all packets sent
+
+        // Calculate intelligent response timeout based on number of ports
+        let num_ports = config.ports_to_scan.len();
+        let response_timeout = if num_ports <= 100 {
+            Duration::from_secs(3) // Small scans: 3 seconds
+        } else if num_ports <= 1000 {
+            Duration::from_secs(5) // Medium scans: 5 seconds
+        } else if num_ports <= 10000 {
+            Duration::from_secs(10) // Large scans: 10 seconds
+        } else {
+            Duration::from_secs(15) // Huge scans (like 1-65535): 15 seconds
+        };
+
+        println!(
+            "🕒 Timeout configured: {} seconds for {} ports",
+            response_timeout.as_secs(),
+            num_ports
+        );
 
         loop {
             match rx.next() {

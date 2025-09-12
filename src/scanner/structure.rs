@@ -49,13 +49,17 @@ impl ScanConfig {
         timeout: u64,
     ) -> Self {
         let source_port: u16 = generate_random_port(10024, 65535) as u16;
+
+        // Calculate intelligent timeout based on scan size and user preference
+        let calculated_timeout = Self::calculate_intelligent_timeout(&ports_to_scan, timeout);
+
         Self {
             interface_ip,
             source_port,
             destination_ip,
             wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
             ports_to_scan,
-            timeout: Duration::from_secs(timeout),
+            timeout: calculated_timeout,
             all_sent: Arc::new(AtomicBool::new(false)),
             max_threads: 100,
             use_dynamic_source_ports: true,
@@ -74,18 +78,50 @@ impl ScanConfig {
     ) -> Self {
         let source_port: u16 =
             fixed_source_port.unwrap_or(generate_random_port(10024, 65535) as u16);
+
+        // Calculate intelligent timeout based on scan size and user preference
+        let calculated_timeout = Self::calculate_intelligent_timeout(&ports_to_scan, timeout);
+
         Self {
             interface_ip,
             source_port,
             destination_ip,
             wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
             ports_to_scan,
-            timeout: Duration::from_secs(timeout),
+            timeout: calculated_timeout,
             all_sent: Arc::new(AtomicBool::new(false)),
             max_threads: 100,
             use_dynamic_source_ports,
             source_port_pool: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
+    }
+
+    /// Calculate intelligent timeout based on scan size and user preference
+    fn calculate_intelligent_timeout(ports_to_scan: &[u16], user_timeout: u64) -> Duration {
+        let num_ports = ports_to_scan.len();
+
+        // Calculate minimum required timeout based on scan size
+        let min_timeout_secs = if num_ports <= 100 {
+            15 // Small scans: 15 seconds minimum
+        } else if num_ports <= 1000 {
+            30 // Medium scans: 30 seconds minimum
+        } else if num_ports <= 10000 {
+            60 // Large scans: 1 minute minimum
+        } else {
+            120 // Huge scans (like 1-65535): 2 minutes minimum
+        };
+
+        // Use the larger of user timeout or calculated minimum
+        let final_timeout = std::cmp::max(user_timeout, min_timeout_secs);
+
+        if final_timeout > user_timeout {
+            println!(
+                "⏰ Adjusting timeout from {}s to {}s for {} ports (scan size requires more time)",
+                user_timeout, final_timeout, num_ports
+            );
+        }
+
+        Duration::from_secs(final_timeout)
     }
 
     /// Generate a unique source port for each destination port to avoid reuse
