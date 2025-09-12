@@ -216,11 +216,13 @@ impl SynScanner {
         results.lock().unwrap().push(result);
 
         if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK {
+            // For RST response, we need to use the destination port from the incoming packet
+            // as our source port (since it was the source port we originally used)
             Self::build_packet(
                 &mut rst_packet,
                 config.interface_ip,
                 config.destination_ip,
-                config.source_port,
+                tcp_packet.get_destination(), // Use the destination port from the SYN-ACK as our source
                 tcp_packet.get_source(),
                 false,
             );
@@ -237,7 +239,14 @@ impl SynScanner {
             config.destination_ip
         );
 
+        if config.use_dynamic_source_ports {
+            println!("🔧 Using dynamic source ports to avoid port reuse and improve stealth");
+        }
+
         for destination_port in config.ports_to_scan.iter() {
+            // Generate a unique source port for each destination port
+            let source_port = config.get_unique_source_port(*destination_port);
+
             let mut vec = Self::get_buffer(&config);
             let mut tcp_packet =
                 MutableTcpPacket::new(&mut vec[..]).expect("Failed to create mutable TCP packet");
@@ -246,7 +255,7 @@ impl SynScanner {
                 &mut tcp_packet,
                 config.interface_ip,
                 config.destination_ip,
-                config.source_port,
+                source_port, // Use unique source port instead of config.source_port
                 *destination_port,
                 true,
             );

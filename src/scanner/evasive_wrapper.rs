@@ -325,6 +325,8 @@ mod tests {
             wait_after_send: Duration::from_millis(100),
             all_sent: Arc::new(AtomicBool::new(false)),
             max_threads: 100,
+            use_dynamic_source_ports: true,
+            source_port_pool: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         }
     }
 

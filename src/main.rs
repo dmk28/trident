@@ -18,15 +18,39 @@ use std::sync::Arc;
 
 use crate::domain_resolver::resolve_ip;
 
+// Function to parse CIDR and return list of IPs
+fn parse_cidr(cidr: &str) -> Result<Vec<IpAddr>, Box<dyn std::error::Error>> {
+    // Simple CIDR parsing - can be enhanced
+    if let Some((ip_str, mask_str)) = cidr.split_once('/') {
+        let base_ip: IpAddr = ip_str.parse()?;
+        let mask: u32 = mask_str.parse()?;
+        let mut ips = Vec::new();
+
+        // For IPv4, generate IPs in range
+        if let IpAddr::V4(base) = base_ip {
+            let base_u32 = u32::from(base);
+            let num_hosts = 2u32.pow(32 - mask);
+            for i in 0..num_hosts {
+                let ip_u32 = base_u32 + i;
+                ips.push(IpAddr::V4(ip_u32.into()));
+            }
+        }
+
+        Ok(ips)
+    } else {
+        Err("Invalid CIDR format".into())
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "project_trident")]
 #[command(about = "A comprehensive network scanner and vulnerability detector")]
 #[command(version = "1.0")]
 struct Args {
-    /// Network interface to use for scanning
-    interface: String,
+    /// Network interface to use for scanning (auto-selected if not specified)
+    interface: Option<String>,
 
-    /// Target IP address or hostname to scan
+    /// Target IP address, hostname, or CIDR range (e.g., 192.168.1.0/24) to scan
     target: String,
 
     /// Port range to scan (e.g., "80", "1-1024", "22,80,443,8080")
@@ -188,6 +212,54 @@ fn get_interface_ip_from_name(interface_name: &str) -> Result<IpAddr, Box<dyn st
     Err(format!("Interface {} not found or has no IP", interface_name).into())
 }
 
+fn auto_select_interface() -> Result<(String, IpAddr), Box<dyn std::error::Error>> {
+    use pnet::datalink;
+    let interfaces = datalink::interfaces();
+
+    // First, try to find a non-loopback interface with an assigned IP
+    for interface in &interfaces {
+        if !interface.is_loopback() && !interface.ips.is_empty() {
+            // Prefer IPv4 addresses
+            for ip_network in &interface.ips {
+                if ip_network.is_ipv4() {
+                    println!(
+                        "🔧 Auto-selected interface: {} ({})",
+                        interface.name,
+                        ip_network.ip()
+                    );
+                    return Ok((interface.name.clone(), ip_network.ip()));
+                }
+            }
+
+            // Fall back to IPv6 if no IPv4 found
+            if let Some(ip_network) = interface.ips.first() {
+                println!(
+                    "🔧 Auto-selected interface: {} ({})",
+                    interface.name,
+                    ip_network.ip()
+                );
+                return Ok((interface.name.clone(), ip_network.ip()));
+            }
+        }
+    }
+
+    // If no non-loopback interface found, try loopback as last resort
+    for interface in &interfaces {
+        if interface.is_loopback() && !interface.ips.is_empty() {
+            if let Some(ip_network) = interface.ips.first() {
+                println!(
+                    "⚠️  Only loopback interface available: {} ({})",
+                    interface.name,
+                    ip_network.ip()
+                );
+                return Ok((interface.name.clone(), ip_network.ip()));
+            }
+        }
+    }
+
+    Err("No suitable network interface found with an assigned IP address".into())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -197,22 +269,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let interface_name = args.interface.clone();
-    let destination_ip = match args.target.parse::<IpAddr>() {
-        Ok(ip) => ip,
-        Err(_) => {
-            println!(
-                "🔍 Could not parse '{}' as IP address, attempting DNS resolution...",
-                args.target
-            );
-            match resolve_ip(&args.target).await {
-                Ok(ip) => {
-                    println!("✅ Resolved '{}' to {}", args.target, ip);
-                    ip
-                }
-                Err(e) => {
-                    println!("❌ Error resolving hostname '{}': {}", args.target, e);
-                    std::process::exit(1);
+    let (interface_name, interface_ip) = if let Some(ref interface) = args.interface {
+        // Use specified interface
+        let ip = get_interface_ip_from_name(interface)?;
+        (interface.clone(), ip)
+    } else {
+        // Auto-select interface
+        auto_select_interface()?
+    };
+
+    // Parse target as IP, hostname, or CIDR range
+    let target_ips = if args.target.contains('/') {
+        // CIDR notation
+        parse_cidr(&args.target)?
+    } else {
+        // Single IP or hostname
+        match args.target.parse::<IpAddr>() {
+            Ok(ip) => vec![ip],
+            Err(_) => {
+                println!(
+                    "🔍 Could not parse '{}' as IP address, attempting DNS resolution...",
+                    args.target
+                );
+                match resolve_ip(&args.target).await {
+                    Ok(ip) => {
+                        println!("✅ Resolved '{}' to {}", args.target, ip);
+                        vec![ip]
+                    }
+                    Err(e) => {
+                        println!("❌ Error resolving hostname '{}': {}", args.target, e);
+                        std::process::exit(1);
+                    }
                 }
             }
         }
@@ -225,8 +312,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             22, 53, 80, 135, 139, 443, 445, 993, 995, 3389, 5432, 8080, 8443,
         ]
     };
-
-    let interface_ip = get_interface_ip_from_name(&interface_name)?;
 
     // Create evasion configuration from CLI arguments
     let evasion_config = EvasionConfig {
@@ -253,90 +338,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let mut syn_scanner = None;
-    let scan_results = match args.scan_type {
-        ScanType::Syn => {
-            // Create evasive scanner wrapper
-            let config = ScanConfig::new(
-                destination_ip,
-                ports_to_scan.clone(),
-                interface_ip,
-                args.timeout,
-            );
-            let mut scanner = if args.decoys > 0 || args.spoof_ports {
-                if args.decoys > 0 {
-                    println!(
-                        "🚀 Starting evasion-enabled SYN scan with {} decoys...",
-                        args.decoys
-                    );
-                }
-                if args.spoof_ports {
-                    println!(
-                        "🔧 Port spoofing enabled: {:?} strategy",
-                        args.spoof_strategy
-                    );
-                }
-                if args.source_port.is_some() {
-                    println!("🔧 Using fixed source port: {}", args.source_port.unwrap());
-                }
-                if args.ipv6_decoys {
-                    println!("🌐 IPv6 decoys enabled");
-                }
-                EvasiveScannerWrapper::new_with_evasion_and_spoofing(
-                    config,
-                    evasion_config.clone(),
-                    port_spoofing_config,
-                )
-            } else {
-                println!("🚀 Starting SYN scan...");
-                EvasiveScannerWrapper::new(config)
-            };
-
-            scanner.scan().await?;
-            syn_scanner = Some(scanner);
-            syn_scanner.as_ref().unwrap().get_results().clone()
-        }
-        ScanType::Connect => {
-            println!("🚀 Starting TCP connect scan...");
-            let config = ScanConfig::new(
-                destination_ip,
-                ports_to_scan.clone(),
-                interface_ip,
-                args.timeout,
-            );
-            let scanner = ConnectScanner::new(config);
-            let (results, _) = scanner
-                .scan_tcp(destination_ip, ports_to_scan.clone())
-                .await?;
-            results
-        }
-        ScanType::Udp => {
-            println!("🚀 Starting UDP scan...");
-            let config = ScanConfig::new(
-                destination_ip,
-                ports_to_scan.clone(),
-                interface_ip,
-                args.timeout,
-            );
-            let mut scanner = UdpScanner::new(config);
-            scanner.scan()?
-        }
-    };
-
-    println!("\n=== Port Scan Results ===");
-    for result in &scan_results {
-        println!("Port {}: {:?}", result.port, result.status);
-    }
-
-    // Print evasion statistics if evasion was enabled
-    if let Some(scanner) = syn_scanner {
-        if scanner.is_evasion_enabled() {
-            println!("\n🥷 === Evasion Statistics ===");
-            let stats = scanner.get_evasion_stats();
-            println!("{}", stats);
-        }
-    }
-
     // Determine which script categories to run
     let script_categories = determine_script_categories(&args);
 
@@ -347,82 +348,189 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Initialize plugin system
-    println!("\n🔌 Initializing plugin system...");
-    println!("📝 Running script categories: {:?}", script_categories);
-    let mut plugin_manager = PluginManager::new();
+    // Scan each IP in the range
+    for (i, destination_ip) in target_ips.iter().enumerate() {
+        println!(
+            "\n🔍 Scanning IP {}/{}: {}",
+            i + 1,
+            target_ips.len(),
+            destination_ip
+        );
 
-    // Register plugins based on selected categories
-    register_plugins_for_categories(&mut plugin_manager, &script_categories);
-
-    // Configure plugin execution
-    plugin_manager.set_execution_mode(ExecutionMode::Priority);
-
-    // Run plugins against scan results
-    println!("\n🔍 Running security analysis plugins...");
-    let plugin_results = plugin_manager
-        .execute_plugins_with_target(&scan_results, destination_ip)
-        .await;
-
-    // Display plugin findings
-    println!("\n🎯 Security Analysis Results:");
-    println!("=====================================");
-
-    for result in &plugin_results {
-        if !result.findings.is_empty() {
-            println!(
-                "\n📋 {} ({}:{})",
-                result.plugin_name, result.target_ip, result.target_port
-            );
-            println!("   Execution time: {:?}", result.execution_time);
-
-            for (i, finding) in result.findings.iter().enumerate() {
-                let severity_emoji = match finding.severity {
-                    plugins::Severity::Critical => "🔴",
-                    plugins::Severity::High => "🟠",
-                    plugins::Severity::Medium => "🟡",
-                    plugins::Severity::Low => "🔵",
-                    plugins::Severity::Info => "ℹ️",
+        let mut syn_scanner = None;
+        let scan_results = match args.scan_type {
+            ScanType::Syn => {
+                // Create evasive scanner wrapper with proper source port configuration
+                let use_dynamic_ports = args.spoof_ports || args.source_port.is_none();
+                let config = ScanConfig::new_with_source_port_config(
+                    *destination_ip,
+                    ports_to_scan.clone(),
+                    interface_ip,
+                    args.timeout,
+                    use_dynamic_ports,
+                    args.source_port,
+                );
+                let mut scanner = if args.decoys > 0 || args.spoof_ports {
+                    if args.decoys > 0 {
+                        println!(
+                            "🚀 Starting evasion-enabled SYN scan with {} decoys...",
+                            args.decoys
+                        );
+                    }
+                    if args.spoof_ports {
+                        println!(
+                            "🔧 Port spoofing enabled: {:?} strategy",
+                            args.spoof_strategy
+                        );
+                    }
+                    if args.source_port.is_some() {
+                        println!("🔧 Using fixed source port: {}", args.source_port.unwrap());
+                    }
+                    if args.ipv6_decoys {
+                        println!("🌐 IPv6 decoys enabled");
+                    }
+                    EvasiveScannerWrapper::new_with_evasion_and_spoofing(
+                        config,
+                        evasion_config.clone(),
+                        port_spoofing_config.clone(),
+                    )
+                } else {
+                    println!("🚀 Starting SYN scan...");
+                    EvasiveScannerWrapper::new(config)
                 };
 
-                println!(
-                    "   {} [{:?}] {}",
-                    severity_emoji, finding.severity, finding.title
+                scanner.scan().await?;
+                syn_scanner = Some(scanner);
+                syn_scanner.as_ref().unwrap().get_results().clone()
+            }
+            ScanType::Connect => {
+                println!("🚀 Starting TCP connect scan...");
+                let use_dynamic_ports = args.spoof_ports || args.source_port.is_none();
+                let config = ScanConfig::new_with_source_port_config(
+                    *destination_ip,
+                    ports_to_scan.clone(),
+                    interface_ip,
+                    args.timeout,
+                    use_dynamic_ports,
+                    args.source_port,
                 );
-                println!("      Description: {}", finding.description);
-                println!("      Confidence: {:.1}%", finding.confidence * 100.0);
+                let scanner = ConnectScanner::new(config);
+                let (results, _) = scanner
+                    .scan_tcp(*destination_ip, ports_to_scan.clone())
+                    .await?;
+                results
+            }
+            ScanType::Udp => {
+                println!("🚀 Starting UDP scan...");
+                let use_dynamic_ports = args.spoof_ports || args.source_port.is_none();
+                let config = ScanConfig::new_with_source_port_config(
+                    *destination_ip,
+                    ports_to_scan.clone(),
+                    interface_ip,
+                    args.timeout,
+                    use_dynamic_ports,
+                    args.source_port,
+                );
+                let mut scanner = UdpScanner::new(config);
+                scanner.scan()?
+            }
+        };
 
-                if !finding.evidence.is_empty() {
-                    println!("      Evidence: {}", finding.evidence.join(", "));
-                }
+        println!("\n=== Port Scan Results for {} ===", destination_ip);
+        for result in &scan_results {
+            println!("Port {}: {:?}", result.port, result.status);
+        }
 
-                if !finding.recommendations.is_empty() {
-                    println!("      Recommendations:");
-                    for rec in &finding.recommendations {
-                        println!("        • {}", rec);
+        // Print evasion statistics if evasion was enabled
+        if let Some(scanner) = syn_scanner {
+            if scanner.is_evasion_enabled() {
+                println!("\n🥷 === Evasion Statistics ===");
+                let stats = scanner.get_evasion_stats();
+                println!("{}", stats);
+            }
+        }
+
+        // Initialize plugin system
+        println!("\n🔌 Initializing plugin system...");
+        println!("📝 Running script categories: {:?}", script_categories);
+        let mut plugin_manager = PluginManager::new();
+
+        // Register plugins based on selected categories
+        register_plugins_for_categories(&mut plugin_manager, &script_categories);
+
+        // Configure plugin execution
+        plugin_manager.set_execution_mode(ExecutionMode::Priority);
+
+        // Run plugins against scan results
+        println!("\n🔍 Running security analysis plugins...");
+        let plugin_results = plugin_manager
+            .execute_plugins_with_target(&scan_results, *destination_ip)
+            .await;
+
+        // Display plugin findings
+        println!("\n🎯 Security Analysis Results for {}:", destination_ip);
+        println!("=====================================");
+
+        for result in &plugin_results {
+            if !result.findings.is_empty() {
+                println!(
+                    "\n📋 {} ({}:{})",
+                    result.plugin_name, result.target_ip, result.target_port
+                );
+                println!("   Execution time: {:?}", result.execution_time);
+
+                for (i, finding) in result.findings.iter().enumerate() {
+                    let severity_emoji = match finding.severity {
+                        plugins::Severity::Critical => "🔴",
+                        plugins::Severity::High => "🟠",
+                        plugins::Severity::Medium => "🟡",
+                        plugins::Severity::Low => "🔵",
+                        plugins::Severity::Info => "ℹ️",
+                    };
+
+                    println!(
+                        "   {} [{:?}] {}",
+                        severity_emoji, finding.severity, finding.title
+                    );
+                    println!("      Description: {}", finding.description);
+                    println!("      Confidence: {:.1}%", finding.confidence * 100.0);
+
+                    if !finding.evidence.is_empty() {
+                        println!("      Evidence: {}", finding.evidence.join(", "));
                     }
-                }
 
-                if i < result.findings.len() - 1 {
-                    println!();
+                    if !finding.recommendations.is_empty() {
+                        println!("      Recommendations:");
+                        for rec in &finding.recommendations {
+                            println!("        • {}", rec);
+                        }
+                    }
+
+                    if i < result.findings.len() - 1 {
+                        println!();
+                    }
                 }
             }
         }
-    }
 
-    // Summary
-    let total_findings = plugin_results
-        .iter()
-        .map(|r| r.findings.len())
-        .sum::<usize>();
-    if total_findings > 0 {
-        println!(
-            "\n📊 Found {} security findings across {} services",
-            total_findings,
-            plugin_results.len()
-        );
-    } else {
-        println!("\n✅ No security issues detected by plugins");
+        // Summary
+        let total_findings = plugin_results
+            .iter()
+            .map(|r| r.findings.len())
+            .sum::<usize>();
+        if total_findings > 0 {
+            println!(
+                "\n📊 Found {} security findings across {} services on {}",
+                total_findings,
+                plugin_results.len(),
+                destination_ip
+            );
+        } else {
+            println!(
+                "\n✅ No security issues detected by plugins on {}",
+                destination_ip
+            );
+        }
     }
 
     println!("\n🎉 Scan and analysis complete!");

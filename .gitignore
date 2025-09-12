@@ -20,4 +20,3 @@ Thumbs.db
 *.temp
 .*.md
 # Documentation (keep guidelines visible)
-# CLAUDE_GUIDELINES.md should remain visible
