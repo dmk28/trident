@@ -207,13 +207,8 @@ impl SynScanner {
             println!("port {} open on host {}", port, ip_addr);
             PortStatus::Open
         } else if flags == TcpFlags::RST || flags == (TcpFlags::RST | TcpFlags::ACK) {
-            println!("port {} closed on host {}", port, ip_addr);
             PortStatus::Closed
         } else {
-            println!(
-                "port {} - unknown response (flags: 0x{:02x}) on host {}",
-                port, flags, ip_addr
-            );
             PortStatus::Filtered
         };
 
@@ -295,13 +290,13 @@ impl SynScanner {
         // Calculate intelligent response timeout based on number of ports
         let num_ports = config.ports_to_scan.len();
         let response_timeout = if num_ports <= 100 {
-            Duration::from_secs(3) // Small scans: 3 seconds
+            Duration::from_secs(5) // Small scans: 5 seconds
         } else if num_ports <= 1000 {
-            Duration::from_secs(5) // Medium scans: 5 seconds
+            Duration::from_secs(10) // Medium scans: 10 seconds
         } else if num_ports <= 10000 {
-            Duration::from_secs(10) // Large scans: 10 seconds
+            Duration::from_secs(20) // Large scans: 20 seconds
         } else {
-            Duration::from_secs(15) // Huge scans (like 1-65535): 15 seconds
+            Duration::from_secs(30) // Huge scans (like 1-65535): 30 seconds
         };
 
         println!(

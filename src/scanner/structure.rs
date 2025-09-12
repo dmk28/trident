@@ -57,7 +57,14 @@ impl ScanConfig {
             interface_ip,
             source_port,
             destination_ip,
-            wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
+            wait_after_send: {
+                let calculated_wait = (500 * ports_to_scan.len() as u64).min(30000);
+                println!(
+                    "⏳ Packet send delay: {}ms (capped at 30s for large scans)",
+                    calculated_wait
+                );
+                Duration::from_millis(calculated_wait)
+            },
             ports_to_scan,
             timeout: calculated_timeout,
             all_sent: Arc::new(AtomicBool::new(false)),
@@ -86,7 +93,14 @@ impl ScanConfig {
             interface_ip,
             source_port,
             destination_ip,
-            wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
+            wait_after_send: {
+                let calculated_wait = (500 * ports_to_scan.len() as u64).min(30000);
+                println!(
+                    "⏳ Packet send delay: {}ms (capped at 30s for large scans)",
+                    calculated_wait
+                );
+                Duration::from_millis(calculated_wait)
+            },
             ports_to_scan,
             timeout: calculated_timeout,
             all_sent: Arc::new(AtomicBool::new(false)),
@@ -104,20 +118,25 @@ impl ScanConfig {
         let min_timeout_secs = if num_ports <= 100 {
             15 // Small scans: 15 seconds minimum
         } else if num_ports <= 1000 {
-            30 // Medium scans: 30 seconds minimum
+            45 // Medium scans: 45 seconds minimum
         } else if num_ports <= 10000 {
-            60 // Large scans: 1 minute minimum
+            90 // Large scans: 1.5 minutes minimum
         } else {
-            120 // Huge scans (like 1-65535): 2 minutes minimum
+            180 // Huge scans (like 1-65535): 3 minutes minimum
         };
 
         // Use the larger of user timeout or calculated minimum
         let final_timeout = std::cmp::max(user_timeout, min_timeout_secs);
 
+        println!(
+            "⏰ Scan timeout: {}s (user: {}s, minimum for {} ports: {}s)",
+            final_timeout, user_timeout, num_ports, min_timeout_secs
+        );
+
         if final_timeout > user_timeout {
             println!(
-                "⏰ Adjusting timeout from {}s to {}s for {} ports (scan size requires more time)",
-                user_timeout, final_timeout, num_ports
+                "   📈 Increased timeout due to scan size - {} ports require at least {}s",
+                num_ports, min_timeout_secs
             );
         }
 

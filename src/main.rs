@@ -1,6 +1,7 @@
 use clap::{Parser, ValueEnum};
+mod data;
+use data::common_ports::*;
 use std::net::IpAddr;
-
 mod domain_resolver;
 mod evasion;
 mod os_fingerprint;
@@ -13,7 +14,9 @@ use plugins::{
     ExecutionMode, PluginManager, service_detection::ServiceDetectionPlugin,
     vulnerability_scanner::VulnerabilityPlugin,
 };
-use scanner::{ConnectScanner, EvasiveScannerWrapper, ScanConfig, UdpScanner, parse_port_range};
+use scanner::{
+    ConnectScanner, EvasiveScannerWrapper, PortStatus, ScanConfig, UdpScanner, parse_port_range,
+};
 use std::sync::Arc;
 
 use crate::domain_resolver::resolve_ip;
@@ -74,7 +77,7 @@ struct Args {
     script_help: bool,
 
     /// Timeout for scan operations in seconds
-    #[arg(long, default_value = "10")]
+    #[arg(long, default_value = "30")]
     timeout: u64,
 
     /// Scan type: syn or connect
@@ -309,9 +312,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ports_to_scan: Vec<u16> = if let Some(ref port_range) = args.ports {
         parse_port_range(&port_range)
     } else {
-        vec![
-            22, 53, 80, 135, 139, 443, 445, 993, 995, 3389, 5432, 8080, 8443,
-        ]
+        get_default_ports()
     };
 
     // Create evasion configuration from CLI arguments
@@ -439,7 +440,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("\n=== Port Scan Results for {} ===", destination_ip);
         for result in &scan_results {
-            println!("Port {}: {:?}", result.port, result.status);
+            if !matches!(result.status, PortStatus::Closed) {
+                println!("Port {}: {:?}", result.port, result.status);
+            }
         }
 
         // Print evasion statistics if evasion was enabled
