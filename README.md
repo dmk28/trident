@@ -1,5 +1,8 @@
 # :trident: Trident :trident: - Rust-based port scanner.
 
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/a43af9d0-a7fc-4a68-95ab-b253ba396073" />
+
+
 _"I fear not the man who has practiced 10,000 kicks once, but I fear the man who has practiced one kick 10,000 times." - Bruce Lee_
 
 ## Description
