@@ -278,6 +278,8 @@ impl SynScanner {
         results: Arc<std::sync::Mutex<Vec<ScanResult>>>,
     ) {
         let start = Instant::now();
+        let mut all_sent_time: Option<Instant> = None;
+        let response_timeout = Duration::from_secs(3); // Wait 3 seconds after all packets sent
 
         loop {
             match rx.next() {
@@ -343,9 +345,33 @@ impl SynScanner {
                 }
             }
 
-            if config.all_sent.load(Ordering::SeqCst)
-                || Instant::now().duration_since(start) > config.timeout
-            {
+            // Check if all packets have been sent
+            let all_packets_sent = config.all_sent.load(Ordering::SeqCst);
+
+            // Record when all packets were sent for the first time
+            if all_packets_sent && all_sent_time.is_none() {
+                all_sent_time = Some(Instant::now());
+                println!(
+                    "🕒 All SYN packets sent, waiting {} seconds for remaining responses...",
+                    response_timeout.as_secs()
+                );
+            }
+
+            // Determine if we should stop receiving
+            let should_stop = if let Some(sent_time) = all_sent_time {
+                // If all packets were sent, wait only for response_timeout duration
+                Instant::now().duration_since(sent_time) > response_timeout
+            } else {
+                // If still sending packets, use the original timeout
+                Instant::now().duration_since(start) > config.timeout
+            };
+
+            if should_stop {
+                if all_packets_sent {
+                    println!("🏁 Response timeout reached, finalizing scan results");
+                } else {
+                    println!("⏰ Overall scan timeout reached");
+                }
                 break;
             }
         }
