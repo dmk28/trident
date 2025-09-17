@@ -11,7 +11,6 @@ pub enum PortStatus {
     Open,
     Closed,
     Filtered,
-    Unfiltered,
     OpenFiltered,
     ClosedFiltered,
 }

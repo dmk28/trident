@@ -1,3 +1,4 @@
+use chrono;
 use clap::{Parser, ValueEnum};
 mod data;
 use data::common_ports::*;
@@ -5,13 +6,29 @@ use std::net::IpAddr;
 mod domain_resolver;
 mod evasion;
 mod os_fingerprint;
+mod output;
 mod plugins;
 mod scanner;
 mod vulndb;
 
+use plugins::shared_services::init_shared_services;
+
 use evasion::{EvasionConfig, PortSpoofingConfig, PortSpoofingStrategy};
 use plugins::{
-    ExecutionMode, PluginManager, service_detection::ServiceDetectionPlugin,
+    ExecutionMode, PluginManager,
+    database_detection::DatabaseDetectionPlugin,
+    os_fingerprint_plugin::OsFingerprintPlugin,
+    service_detection::ServiceDetectionPlugin,
+    vuln_database_plugin::VulnDatabasePlugin,
+    vulnerability_plugins::{
+        auth_vulns::{DefaultAccountScanner, WeakPasswordScanner},
+        config_vulns::{DebugModeScanner, MisconfigurationScanner},
+        crypto_vulns::{CertificateScanner, WeakEncryptionScanner},
+        database_vulns::{DefaultCredsScanner, SqlInjectionScanner, WeakAuthScanner},
+        injection_vulns::{CommandInjectionScanner, LdapInjectionScanner, NoSqlInjectionScanner},
+        network_vulns::{PlaintextProtocolScanner, WeakCipherScanner},
+        web_vulns::{DirectoryTraversalScanner, SecurityHeaderScanner, XssScanner},
+    },
     vulnerability_scanner::VulnerabilityPlugin,
 };
 use scanner::{
@@ -100,6 +117,14 @@ struct Args {
     /// Enable port spoofing for firewall bypass
     #[arg(long)]
     spoof_ports: bool,
+
+    /// Output format for results (json, markdown)
+    #[arg(long)]
+    output_format: Option<String>,
+
+    /// Output directory for result files (default: trident_outputs)
+    #[arg(long)]
+    output_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -273,6 +298,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Initialize shared services early
+    init_shared_services().await;
+    println!("🚀 Project Trident initialized with shared services");
+
+    // Initialize output writer if format is specified
+    let output_writer = if let Some(ref format) = args.output_format {
+        let output_format = match format.to_lowercase().as_str() {
+            "json" => output::OutputFormat::Json,
+            "markdown" | "md" => output::OutputFormat::Markdown,
+            _ => {
+                println!("❌ Invalid output format. Use 'json' or 'markdown'");
+                std::process::exit(1);
+            }
+        };
+        Some(output::OutputWriter::new(
+            output_format,
+            args.output_dir.clone(),
+        ))
+    } else {
+        None
+    };
+
     let (interface_name, interface_ip) = if let Some(ref interface) = args.interface {
         // Use specified interface
         let ip = get_interface_ip_from_name(interface)?;
@@ -359,6 +406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             destination_ip
         );
 
+        let scan_start = std::time::Instant::now();
         let mut syn_scanner = None;
         let scan_results = match args.scan_type {
             ScanType::Syn => {
@@ -535,6 +583,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 destination_ip
             );
         }
+
+        // Write output file if format is specified
+        if let Some(ref writer) = output_writer {
+            let scan_duration = scan_start.elapsed();
+            match writer.write_scan_results(
+                &destination_ip.to_string(),
+                &scan_results,
+                &plugin_results,
+                scan_duration,
+            ) {
+                Ok(filepath) => {
+                    println!("📄 Report written to: {}", filepath);
+                }
+                Err(e) => {
+                    println!("⚠️  Failed to write report: {}", e);
+                }
+            }
+
+            // Also print summary to console
+            let session_data = output::ScanSession {
+                session_id: format!("trident-{}", chrono::Local::now().timestamp()),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                target_ip: destination_ip.to_string(),
+                total_ports_scanned: scan_results.len(),
+                open_ports: scan_results
+                    .iter()
+                    .filter(|r| matches!(r.status, PortStatus::Open))
+                    .count(),
+                filtered_ports: scan_results
+                    .iter()
+                    .filter(|r| {
+                        matches!(
+                            r.status,
+                            PortStatus::Filtered
+                                | PortStatus::OpenFiltered
+                                | PortStatus::ClosedFiltered
+                        )
+                    })
+                    .count(),
+                closed_ports: scan_results
+                    .iter()
+                    .filter(|r| matches!(r.status, PortStatus::Closed))
+                    .count(),
+                scan_duration_ms: scan_duration.as_millis(),
+                plugin_results: plugin_results.iter().map(|r| r.into()).collect(),
+            };
+            writer.print_summary(&session_data);
+        }
     }
 
     println!("\n🎉 Scan and analysis complete!");
@@ -574,23 +670,72 @@ fn register_plugins_for_categories(
         match category {
             ScriptCategory::Vuln => {
                 plugin_manager.register_plugin(Arc::new(VulnerabilityPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(VulnDatabasePlugin::new()));
+                plugin_manager.register_plugin(Arc::new(SqlInjectionScanner::new()));
+                plugin_manager.register_plugin(Arc::new(CommandInjectionScanner::new()));
+                plugin_manager.register_plugin(Arc::new(XssScanner::new()));
+                plugin_manager.register_plugin(Arc::new(DirectoryTraversalScanner::new()));
             }
             ScriptCategory::Discovery => {
                 plugin_manager.register_plugin(Arc::new(ServiceDetectionPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(DatabaseDetectionPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(OsFingerprintPlugin::new()));
             }
             ScriptCategory::Default => {
                 plugin_manager.register_plugin(Arc::new(VulnerabilityPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(VulnDatabasePlugin::new()));
                 plugin_manager.register_plugin(Arc::new(ServiceDetectionPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(DatabaseDetectionPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(OsFingerprintPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(DefaultAccountScanner::new()));
+                plugin_manager.register_plugin(Arc::new(MisconfigurationScanner::new()));
+                plugin_manager.register_plugin(Arc::new(PlaintextProtocolScanner::new()));
             }
             ScriptCategory::Safe => {
                 plugin_manager.register_plugin(Arc::new(ServiceDetectionPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(DatabaseDetectionPlugin::new()));
                 // Only add safe vulnerability checks
+                plugin_manager.register_plugin(Arc::new(MisconfigurationScanner::new()));
+                plugin_manager.register_plugin(Arc::new(SecurityHeaderScanner::new()));
+                plugin_manager.register_plugin(Arc::new(PlaintextProtocolScanner::new()));
+            }
+            ScriptCategory::Database => {
+                plugin_manager.register_plugin(Arc::new(DatabaseDetectionPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(SqlInjectionScanner::new()));
+                plugin_manager.register_plugin(Arc::new(WeakAuthScanner::new()));
+                plugin_manager.register_plugin(Arc::new(DefaultCredsScanner::new()));
+            }
+            ScriptCategory::Auth => {
+                plugin_manager.register_plugin(Arc::new(DefaultAccountScanner::new()));
+                plugin_manager.register_plugin(Arc::new(WeakPasswordScanner::new()));
+                plugin_manager.register_plugin(Arc::new(WeakAuthScanner::new()));
+                plugin_manager.register_plugin(Arc::new(DefaultCredsScanner::new()));
+            }
+            ScriptCategory::Web => {
+                plugin_manager.register_plugin(Arc::new(XssScanner::new()));
+                plugin_manager.register_plugin(Arc::new(DirectoryTraversalScanner::new()));
+                plugin_manager.register_plugin(Arc::new(SecurityHeaderScanner::new()));
+            }
+            ScriptCategory::Network => {
+                plugin_manager.register_plugin(Arc::new(PlaintextProtocolScanner::new()));
+                plugin_manager.register_plugin(Arc::new(WeakCipherScanner::new()));
+                plugin_manager.register_plugin(Arc::new(WeakEncryptionScanner::new()));
+                plugin_manager.register_plugin(Arc::new(CertificateScanner::new()));
+            }
+            ScriptCategory::Info => {
+                plugin_manager.register_plugin(Arc::new(ServiceDetectionPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(VulnDatabasePlugin::new()));
+                plugin_manager.register_plugin(Arc::new(OsFingerprintPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(SecurityHeaderScanner::new()));
+                plugin_manager.register_plugin(Arc::new(CertificateScanner::new()));
             }
             _ => {
-                // For now, register basic plugins for other categories
-                // TODO: Implement category-specific plugins
+                // For any other categories, register basic plugins
                 plugin_manager.register_plugin(Arc::new(ServiceDetectionPlugin::new()));
                 plugin_manager.register_plugin(Arc::new(VulnerabilityPlugin::new()));
+                plugin_manager.register_plugin(Arc::new(DebugModeScanner::new()));
+                plugin_manager.register_plugin(Arc::new(LdapInjectionScanner::new()));
+                plugin_manager.register_plugin(Arc::new(NoSqlInjectionScanner::new()));
             }
         }
     }

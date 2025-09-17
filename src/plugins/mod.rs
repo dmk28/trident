@@ -1,8 +1,15 @@
+pub mod core;
 pub mod database_detection;
+pub mod loader;
+pub mod os_fingerprint_plugin;
 pub mod plugin_manager;
 pub mod plugin_trait;
+pub mod registry;
 pub mod service_detection;
+pub mod shared_services;
+pub mod vuln_database_plugin;
+pub mod vulnerability_plugins;
 pub mod vulnerability_scanner;
-
 pub use plugin_manager::*;
 pub use plugin_trait::*;
+pub use shared_services::*;

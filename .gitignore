@@ -20,3 +20,4 @@ Thumbs.db
 *.temp
 .*.md
 # Documentation (keep guidelines visible)
+/trident_outputs

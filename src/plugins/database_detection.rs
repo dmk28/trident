@@ -1,9 +1,8 @@
-use crate::os_fingerprint::database_probes::{
-    DatabaseInfo, DatabaseProbeError, comprehensive_probe_any_database,
-};
+use crate::os_fingerprint::database_probes::DatabaseInfo;
 use crate::plugins::plugin_trait::{
     FindingBuilder, Plugin, PluginConfig, PluginPriority, PluginResult, Severity,
 };
+use crate::plugins::shared_services::get_database_service;
 use crate::scanner::{PortStatus, ScanResult};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -26,20 +25,18 @@ impl DatabaseDetectionPlugin {
         }
     }
 
-    /// Check if port is a common database port
-    fn is_database_port(&self, port: u16) -> bool {
-        matches!(
-            port,
-            3306 | 3307 | 5432 | 5433 | 1433 | 1434 | 1521 | 1522 | 27017 | 6379
-        )
+    /// Get database service (uses shared service)
+    async fn get_db_service(
+        &self,
+    ) -> tokio::sync::MutexGuard<'static, crate::plugins::shared_services::DatabaseDetectionService>
+    {
+        get_database_service().await
     }
 
-    /// Detect database service using comprehensive probing
+    /// Detect database service using shared service
     async fn probe_database_service(&self, ip: IpAddr, port: u16) -> Option<DatabaseInfo> {
-        match comprehensive_probe_any_database(ip, port).await {
-            Ok(db_info) => Some(db_info),
-            Err(_) => None,
-        }
+        let db_service = self.get_db_service().await;
+        db_service.detect_database(ip, port).await
     }
 
     /// Convert DatabaseInfo to appropriate findings
@@ -149,6 +146,29 @@ impl DatabaseDetectionPlugin {
 
         findings
     }
+
+    fn get_database_type_hint(&self, port: u16) -> &'static str {
+        match port {
+            3306 => "MySQL",
+            5432 => "PostgreSQL",
+            1521 => "Oracle",
+            1433 => "SQL Server",
+            6379 => "Redis",
+            27017 => "MongoDB",
+            5984 => "CouchDB",
+            9042 => "Cassandra",
+            7000 | 7001 => "Cassandra",
+            8086 => "InfluxDB",
+            _ => "Unknown Database",
+        }
+    }
+
+    fn is_common_database_port(&self, port: u16) -> bool {
+        matches!(
+            port,
+            1433 | 1521 | 3306 | 5432 | 6379 | 27017 | 5984 | 9042 | 7000 | 7001 | 8086
+        )
+    }
 }
 
 impl Default for DatabaseDetectionPlugin {
@@ -180,7 +200,7 @@ impl Plugin for DatabaseDetectionPlugin {
     fn can_analyze(&self, scan_result: &ScanResult) -> bool {
         // Only analyze open ports that might be databases
         matches!(scan_result.status, PortStatus::Open)
-            && (self.is_database_port(scan_result.port) || scan_result.port > 1024)
+            && (self.is_common_database_port(scan_result.port) || scan_result.port > 1024)
     }
 
     fn required_port_status(&self) -> Vec<PortStatus> {
@@ -201,7 +221,7 @@ impl Plugin for DatabaseDetectionPlugin {
 
         println!("🔍 Probing {}:{} for database services...", target, port);
 
-        // Attempt database detection
+        // Attempt database detection using shared service
         match self.probe_database_service(target, port).await {
             Some(db_info) => {
                 println!(
@@ -213,12 +233,13 @@ impl Plugin for DatabaseDetectionPlugin {
             None => {
                 // If this is a known database port but we couldn't identify the specific database,
                 // still create a generic finding
-                if self.is_database_port(port) {
+                if self.is_common_database_port(port) {
+                    let type_hint = self.get_database_type_hint(port);
                     let generic_finding = Self::create_finding(
                         "Potential Database Service",
                         format!(
-                            "Port {} is commonly used for database services but specific database type could not be identified",
-                            port
+                            "Port {} is commonly used for database services (likely {}) but specific database type could not be identified",
+                            port, type_hint
                         ),
                         Severity::Info,
                     );
@@ -273,8 +294,9 @@ pub async fn enhance_service_detection_with_database_probing(
     port: u16,
     existing_findings: &mut Vec<String>,
 ) -> Option<DatabaseInfo> {
-    // Use comprehensive database probing
-    if let Ok(db_info) = comprehensive_probe_any_database(ip, port).await {
+    // Use shared database service
+    let db_service = get_database_service().await;
+    if let Some(db_info) = db_service.detect_database(ip, port).await {
         // Add database findings to existing results
         let service_description = if let Some(version) = &db_info.version {
             format!("{}:{} - {} v{}", ip, port, db_info.service_type, version)
@@ -313,19 +335,20 @@ mod tests {
     use crate::scanner::ScanResult;
     use std::net::Ipv4Addr;
 
-    #[test]
-    fn test_database_port_recognition() {
+    #[tokio::test]
+    async fn test_database_port_recognition() {
         let plugin = DatabaseDetectionPlugin::new();
+        let db_service = plugin.get_db_service().await;
 
-        assert!(plugin.is_database_port(3306)); // MySQL
-        assert!(plugin.is_database_port(5432)); // PostgreSQL
-        assert!(plugin.is_database_port(1433)); // MSSQL
-        assert!(plugin.is_database_port(1521)); // Oracle
-        assert!(plugin.is_database_port(27017)); // MongoDB
-        assert!(plugin.is_database_port(6379)); // Redis
+        assert!(db_service.is_database_port(3306)); // MySQL
+        assert!(db_service.is_database_port(5432)); // PostgreSQL
+        assert!(db_service.is_database_port(1433)); // MSSQL
+        assert!(db_service.is_database_port(1521)); // Oracle
+        assert!(db_service.is_database_port(27017)); // MongoDB
+        assert!(db_service.is_database_port(6379)); // Redis
 
-        assert!(!plugin.is_database_port(80)); // HTTP
-        assert!(!plugin.is_database_port(22)); // SSH
+        assert!(!db_service.is_database_port(80)); // HTTP
+        assert!(!db_service.is_database_port(22)); // SSH
     }
 
     #[test]

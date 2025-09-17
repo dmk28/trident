@@ -1,10 +1,11 @@
 use super::plugin_trait::{
     Finding, FindingBuilder, Plugin, PluginConfig, PluginPriority, PluginResult, Severity,
 };
-use crate::os_fingerprint::database_probes::{DatabaseInfo, comprehensive_probe_any_database};
+use crate::os_fingerprint::database_probes::DatabaseInfo;
 use crate::os_fingerprint::{
     ConversationResult, grab_ftp_banner, grab_http_banner, grab_ssh_banner, run_smtp_conversation,
 };
+use crate::plugins::shared_services::get_database_service;
 use crate::scanner::{PortStatus, ScanResult};
 use async_trait::async_trait;
 use std::net::IpAddr;
@@ -307,12 +308,13 @@ impl ServiceDetectionPlugin {
         None
     }
 
-    /// Detect database services using comprehensive database probing
+    /// Detect database services using shared database service
     async fn detect_database(&self, ip: IpAddr, port: u16) -> Vec<Finding> {
         let mut findings = Vec::new();
+        let db_service = get_database_service().await;
 
-        match comprehensive_probe_any_database(ip, port).await {
-            Ok(db_info) => {
+        match db_service.detect_database(ip, port).await {
+            Some(db_info) => {
                 let version = db_info.version.as_deref();
                 let mut finding = Self::create_service_finding(
                     &db_info.service_type,
@@ -387,31 +389,18 @@ impl ServiceDetectionPlugin {
 
                 findings.push(finding);
             }
-            Err(_) => {
+            None => {
                 // If we can't identify the specific database, but we're on a common database port,
-                // still note that something is listening
-                match port {
-                    3306 => findings.push(Self::create_service_finding(
-                        "Database (MySQL/MariaDB?)",
+                // still note that something is listening with type hint
+                if db_service.is_database_port(port) {
+                    let type_hint = db_service
+                        .get_database_type_hint(port)
+                        .unwrap_or("Unknown Database");
+                    findings.push(Self::create_service_finding(
+                        &format!("Database ({}?)", type_hint),
                         None,
                         None,
-                    )),
-                    5432 => findings.push(Self::create_service_finding(
-                        "Database (PostgreSQL?)",
-                        None,
-                        None,
-                    )),
-                    1433 => findings.push(Self::create_service_finding(
-                        "Database (MSSQL?)",
-                        None,
-                        None,
-                    )),
-                    1521 => findings.push(Self::create_service_finding(
-                        "Database (Oracle?)",
-                        None,
-                        None,
-                    )),
-                    _ => {} // Don't assume database for non-standard ports
+                    ));
                 }
             }
         }
