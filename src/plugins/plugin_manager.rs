@@ -48,6 +48,7 @@ pub struct PluginManager {
     stats: HashMap<String, PluginStats>,
     execution_mode: ExecutionMode,
     global_timeout: Duration,
+    verbose: bool,
 }
 
 impl PluginManager {
@@ -58,6 +59,18 @@ impl PluginManager {
             stats: HashMap::new(),
             execution_mode: ExecutionMode::Sequential,
             global_timeout: Duration::from_secs(300),
+            verbose: false,
+        }
+    }
+
+    pub fn new_with_verbose(verbose: bool) -> Self {
+        Self {
+            plugins: Vec::new(),
+            configs: HashMap::new(),
+            stats: HashMap::new(),
+            execution_mode: ExecutionMode::Sequential,
+            global_timeout: Duration::from_secs(300),
+            verbose,
         }
     }
 
@@ -104,10 +117,12 @@ impl PluginManager {
         let start_time = Instant::now();
         let mut all_results = Vec::new();
 
-        println!(
-            "🔍 Running plugins against {} scan results...",
-            scan_results.len()
-        );
+        if self.verbose {
+            println!(
+                "🔍 Running plugins against {} scan results...",
+                scan_results.len()
+            );
+        }
 
         for scan_result in scan_results {
             let results = self
@@ -117,7 +132,9 @@ impl PluginManager {
         }
 
         let total_time = start_time.elapsed();
-        println!("✅ Plugin execution complete in {:?}", total_time);
+        if self.verbose {
+            println!("✅ Plugin execution complete in {:?}", total_time);
+        }
         self.print_summary(&all_results);
 
         all_results

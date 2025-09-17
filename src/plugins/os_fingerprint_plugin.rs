@@ -338,9 +338,9 @@ impl OsFingerprintPlugin {
                 }
 
                 // AWS IP ranges (partial)
-                if (octets[0] == 54 && (octets[1] >= 144 && octets[1] <= 255))
-                    || (octets[0] == 52 && (octets[1] >= 0 && octets[1] <= 255))
-                    || (octets[0] == 34 && (octets[1] >= 192 && octets[1] <= 255))
+                if (octets[0] == 54 && octets[1] >= 144)
+                    || octets[0] == 52
+                    || (octets[0] == 34 && octets[1] >= 192)
                 {
                     return true;
                 }

@@ -4,6 +4,7 @@ mod data;
 use data::common_ports::*;
 use std::net::IpAddr;
 mod domain_resolver;
+mod errors;
 mod evasion;
 mod os_fingerprint;
 mod output;
@@ -11,7 +12,7 @@ mod plugins;
 mod scanner;
 mod vulndb;
 
-use plugins::shared_services::init_shared_services;
+use plugins::shared_services::init_shared_services_with_verbose;
 
 use evasion::{EvasionConfig, PortSpoofingConfig, PortSpoofingStrategy};
 use plugins::{
@@ -125,6 +126,22 @@ struct Args {
     /// Output directory for result files (default: trident_outputs)
     #[arg(long)]
     output_dir: Option<String>,
+
+    /// Maximum scan rate (packets per second)
+    #[arg(long, default_value = "1000")]
+    rate: u32,
+
+    /// Maximum number of retries for failed connections
+    #[arg(long, default_value = "3")]
+    max_retries: u32,
+
+    /// Maximum RTT timeout in milliseconds for adaptive timing
+    #[arg(long, default_value = "5000")]
+    max_rtt_timeout: u64,
+
+    /// Enable verbose output with detailed progress and debug information
+    #[arg(short = 'v', long)]
+    verbose: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -241,7 +258,7 @@ fn get_interface_ip_from_name(interface_name: &str) -> Result<IpAddr, Box<dyn st
     Err(format!("Interface {} not found or has no IP", interface_name).into())
 }
 
-fn auto_select_interface() -> Result<(String, IpAddr), Box<dyn std::error::Error>> {
+fn auto_select_interface(verbose: bool) -> Result<(String, IpAddr), Box<dyn std::error::Error>> {
     use pnet::datalink;
     let interfaces = datalink::interfaces();
 
@@ -262,11 +279,13 @@ fn auto_select_interface() -> Result<(String, IpAddr), Box<dyn std::error::Error
 
             // Fall back to IPv6 if no IPv4 found
             if let Some(ip_network) = interface.ips.first() {
-                println!(
-                    "🔧 Auto-selected interface: {} ({})",
-                    interface.name,
-                    ip_network.ip()
-                );
+                if verbose {
+                    println!(
+                        "🔧 Auto-selected interface: {} ({})",
+                        interface.name,
+                        ip_network.ip()
+                    );
+                }
                 return Ok((interface.name.clone(), ip_network.ip()));
             }
         }
@@ -276,11 +295,13 @@ fn auto_select_interface() -> Result<(String, IpAddr), Box<dyn std::error::Error
     for interface in &interfaces {
         if interface.is_loopback() && !interface.ips.is_empty() {
             if let Some(ip_network) = interface.ips.first() {
-                println!(
-                    "⚠️  Only loopback interface available: {} ({})",
-                    interface.name,
-                    ip_network.ip()
-                );
+                if verbose {
+                    println!(
+                        "🔧 Using loopback interface: {} ({})",
+                        interface.name,
+                        ip_network.ip()
+                    );
+                }
                 return Ok((interface.name.clone(), ip_network.ip()));
             }
         }
@@ -299,8 +320,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Initialize shared services early
-    init_shared_services().await;
-    println!("🚀 Project Trident initialized with shared services");
+    init_shared_services_with_verbose(args.verbose).await;
+    if args.verbose {
+        println!("🚀 Project Trident initialized with shared services");
+    }
 
     // Initialize output writer if format is specified
     let output_writer = if let Some(ref format) = args.output_format {
@@ -326,7 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (interface.clone(), ip)
     } else {
         // Auto-select interface
-        auto_select_interface()?
+        auto_select_interface(args.verbose)?
     };
 
     // Parse target as IP, hostname, or CIDR range
@@ -338,13 +361,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match args.target.parse::<IpAddr>() {
             Ok(ip) => vec![ip],
             Err(_) => {
-                println!(
-                    "🔍 Could not parse '{}' as IP address, attempting DNS resolution...",
-                    args.target
-                );
+                if args.verbose {
+                    println!(
+                        "🔍 Could not parse '{}' as IP address, attempting DNS resolution...",
+                        args.target
+                    );
+                }
                 match resolve_ip(&args.target).await {
                     Ok(ip) => {
-                        println!("✅ Resolved '{}' to {}", args.target, ip);
+                        if args.verbose {
+                            println!("✅ Resolved '{}' to {}", args.target, ip);
+                        }
                         vec![ip]
                     }
                     Err(e) => {
@@ -412,29 +439,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ScanType::Syn => {
                 // Create evasive scanner wrapper with proper source port configuration
                 let use_dynamic_ports = args.spoof_ports || args.source_port.is_none();
-                let config = ScanConfig::new_with_source_port_config(
+                let config = ScanConfig::new_with_rate_control(
                     *destination_ip,
                     ports_to_scan.clone(),
                     interface_ip,
                     args.timeout,
+                    args.rate,
+                    args.max_retries,
                     use_dynamic_ports,
                     args.source_port,
+                    args.verbose,
                 );
                 let mut scanner = if args.decoys > 0 || args.spoof_ports {
-                    if args.decoys > 0 {
-                        println!(
-                            "🚀 Starting evasion-enabled SYN scan with {} decoys...",
-                            args.decoys
-                        );
-                    }
-                    if args.spoof_ports {
-                        println!(
-                            "🔧 Port spoofing enabled: {:?} strategy",
-                            args.spoof_strategy
-                        );
-                    }
-                    if args.source_port.is_some() {
-                        println!("🔧 Using fixed source port: {}", args.source_port.unwrap());
+                    if args.verbose {
+                        if args.decoys > 0 {
+                            println!(
+                                "🚀 Starting evasion-enabled SYN scan with {} decoys...",
+                                args.decoys
+                            );
+                        }
+                        if args.spoof_ports {
+                            println!(
+                                "🔧 Port spoofing enabled: {:?} strategy",
+                                args.spoof_strategy
+                            );
+                        }
+                        if args.source_port.is_some() {
+                            println!("🔧 Using fixed source port: {}", args.source_port.unwrap());
+                        }
                     }
                     if args.ipv6_decoys {
                         println!("🌐 IPv6 decoys enabled");
@@ -445,7 +477,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         port_spoofing_config.clone(),
                     )
                 } else {
-                    println!("🚀 Starting SYN scan...");
+                    if args.verbose {
+                        println!("🚀 Starting SYN scan...");
+                    }
                     EvasiveScannerWrapper::new(config)
                 };
 
@@ -454,41 +488,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 syn_scanner.as_ref().unwrap().get_results().clone()
             }
             ScanType::Connect => {
-                println!("🚀 Starting TCP connect scan...");
+                if args.verbose {
+                    println!("🚀 Starting TCP connect scan...");
+                }
                 let use_dynamic_ports = args.spoof_ports || args.source_port.is_none();
-                let config = ScanConfig::new_with_source_port_config(
+                let config = ScanConfig::new_with_rate_control(
                     *destination_ip,
                     ports_to_scan.clone(),
                     interface_ip,
                     args.timeout,
+                    args.rate,
+                    args.max_retries,
                     use_dynamic_ports,
                     args.source_port,
+                    args.verbose,
                 );
-                let scanner = ConnectScanner::new(config);
+                let scanner = ConnectScanner::new(config, args.verbose);
                 let (results, _) = scanner
                     .scan_tcp(*destination_ip, ports_to_scan.clone())
                     .await?;
                 results
             }
             ScanType::Udp => {
-                println!("🚀 Starting UDP scan...");
+                if args.verbose {
+                    println!("🚀 Starting UDP scan...");
+                }
                 let use_dynamic_ports = args.spoof_ports || args.source_port.is_none();
-                let config = ScanConfig::new_with_source_port_config(
+                let config = ScanConfig::new_with_rate_control(
                     *destination_ip,
                     ports_to_scan.clone(),
                     interface_ip,
                     args.timeout,
+                    args.rate,
+                    args.max_retries,
                     use_dynamic_ports,
                     args.source_port,
+                    args.verbose,
                 );
                 let mut scanner = UdpScanner::new(config);
                 scanner.scan()?
             }
         };
 
-        println!("\n=== Port Scan Results for {} ===", destination_ip);
-        for result in &scan_results {
-            if !matches!(result.status, PortStatus::Closed) {
+        // Only show open ports by default, all results in verbose mode
+        let open_results: Vec<_> = scan_results
+            .iter()
+            .filter(|r| matches!(r.status, PortStatus::Open))
+            .collect();
+
+        if !open_results.is_empty() {
+            for result in &open_results {
+                println!("{}:{} open", destination_ip, result.port);
+            }
+        } else if args.verbose {
+            println!("No open ports found on {}", destination_ip);
+        }
+
+        if args.verbose {
+            println!(
+                "\n=== Detailed Port Scan Results for {} ===",
+                destination_ip
+            );
+            for result in &scan_results {
                 println!("Port {}: {:?}", result.port, result.status);
             }
         }
@@ -503,9 +564,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Initialize plugin system
-        println!("\n🔌 Initializing plugin system...");
-        println!("📝 Running script categories: {:?}", script_categories);
-        let mut plugin_manager = PluginManager::new();
+        if args.verbose {
+            println!("🔌 Initializing plugin system...");
+        }
+        if args.verbose {
+            println!("📝 Running script categories: {:?}", script_categories);
+        }
+        let mut plugin_manager = PluginManager::new_with_verbose(args.verbose);
 
         // Register plugins based on selected categories
         register_plugins_for_categories(&mut plugin_manager, &script_categories);
@@ -514,14 +579,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugin_manager.set_execution_mode(ExecutionMode::Priority);
 
         // Run plugins against scan results
-        println!("\n🔍 Running security analysis plugins...");
+        if args.verbose {
+            println!("\n🔍 Running security analysis plugins...");
+        }
         let plugin_results = plugin_manager
             .execute_plugins_with_target(&scan_results, *destination_ip)
             .await;
 
         // Display plugin findings
-        println!("\n🎯 Security Analysis Results for {}:", destination_ip);
-        println!("=====================================");
+        if args.verbose {
+            println!("\n🎯 Security Analysis Results for {}:", destination_ip);
+            println!("=====================================");
+        }
 
         for result in &plugin_results {
             if !result.findings.is_empty() {
@@ -633,7 +702,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n🎉 Scan and analysis complete!");
+    if args.verbose {
+        println!("\n🎉 Scan and analysis complete!");
+    }
     Ok(())
 }
 

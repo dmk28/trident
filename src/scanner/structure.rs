@@ -50,7 +50,8 @@ impl ScanConfig {
         let source_port: u16 = generate_random_port(10024, 65535) as u16;
 
         // Calculate intelligent timeout based on scan size and user preference
-        let calculated_timeout = Self::calculate_intelligent_timeout(&ports_to_scan, timeout);
+        let calculated_timeout =
+            Self::calculate_intelligent_timeout(&ports_to_scan, timeout, false);
 
         Self {
             interface_ip,
@@ -58,10 +59,6 @@ impl ScanConfig {
             destination_ip,
             wait_after_send: {
                 let calculated_wait = (500 * ports_to_scan.len() as u64).min(30000);
-                println!(
-                    "⏳ Packet send delay: {}ms (capped at 30s for large scans)",
-                    calculated_wait
-                );
                 Duration::from_millis(calculated_wait)
             },
             ports_to_scan,
@@ -86,7 +83,8 @@ impl ScanConfig {
             fixed_source_port.unwrap_or(generate_random_port(10024, 65535) as u16);
 
         // Calculate intelligent timeout based on scan size and user preference
-        let calculated_timeout = Self::calculate_intelligent_timeout(&ports_to_scan, timeout);
+        let calculated_timeout =
+            Self::calculate_intelligent_timeout(&ports_to_scan, timeout, false);
 
         Self {
             interface_ip,
@@ -94,10 +92,6 @@ impl ScanConfig {
             destination_ip,
             wait_after_send: {
                 let calculated_wait = (500 * ports_to_scan.len() as u64).min(30000);
-                println!(
-                    "⏳ Packet send delay: {}ms (capped at 30s for large scans)",
-                    calculated_wait
-                );
                 Duration::from_millis(calculated_wait)
             },
             ports_to_scan,
@@ -109,8 +103,60 @@ impl ScanConfig {
         }
     }
 
+    /// Create a new scan config with rate control and retry parameters
+    pub fn new_with_rate_control(
+        destination_ip: IpAddr,
+        ports_to_scan: Vec<u16>,
+        interface_ip: IpAddr,
+        timeout: u64,
+        rate: u32,
+        max_retries: u32,
+        use_dynamic_source_ports: bool,
+        fixed_source_port: Option<u16>,
+        verbose: bool,
+    ) -> Self {
+        let source_port: u16 =
+            fixed_source_port.unwrap_or(generate_random_port(10024, 65535) as u16);
+
+        // Calculate intelligent timeout based on scan size and user preference
+        let calculated_timeout =
+            Self::calculate_intelligent_timeout(&ports_to_scan, timeout, verbose);
+
+        // Convert rate to max concurrent connections (cap it for safety)
+        let max_concurrent = (rate as usize).min(2000).max(10);
+
+        Self {
+            interface_ip,
+            source_port,
+            destination_ip,
+            wait_after_send: {
+                // Reduce wait time based on rate - higher rate = less wait
+                let base_wait = 500 * ports_to_scan.len() as u64;
+                let rate_adjusted_wait = base_wait / (rate as u64).max(1);
+                let final_wait = rate_adjusted_wait.min(30000);
+                if verbose {
+                    println!(
+                        "⏳ Rate-adjusted packet delay: {}ms (rate: {}/s, max concurrent: {})",
+                        final_wait, rate, max_concurrent
+                    );
+                }
+                Duration::from_millis(final_wait)
+            },
+            ports_to_scan,
+            timeout: calculated_timeout,
+            all_sent: Arc::new(AtomicBool::new(false)),
+            max_threads: max_concurrent,
+            use_dynamic_source_ports,
+            source_port_pool: Arc::new(std::sync::Mutex::new(HashSet::new())),
+        }
+    }
+
     /// Calculate intelligent timeout based on scan size and user preference
-    fn calculate_intelligent_timeout(ports_to_scan: &[u16], user_timeout: u64) -> Duration {
+    fn calculate_intelligent_timeout(
+        ports_to_scan: &[u16],
+        user_timeout: u64,
+        verbose: bool,
+    ) -> Duration {
         let num_ports = ports_to_scan.len();
 
         // Calculate minimum required timeout based on scan size
@@ -127,16 +173,18 @@ impl ScanConfig {
         // Use the larger of user timeout or calculated minimum
         let final_timeout = std::cmp::max(user_timeout, min_timeout_secs);
 
-        println!(
-            "⏰ Scan timeout: {}s (user: {}s, minimum for {} ports: {}s)",
-            final_timeout, user_timeout, num_ports, min_timeout_secs
-        );
-
-        if final_timeout > user_timeout {
+        if verbose {
             println!(
-                "   📈 Increased timeout due to scan size - {} ports require at least {}s",
-                num_ports, min_timeout_secs
+                "⏰ Scan timeout: {}s (user: {}s, minimum for {} ports: {}s)",
+                final_timeout, user_timeout, num_ports, min_timeout_secs
             );
+
+            if final_timeout > user_timeout {
+                println!(
+                    "   📈 Increased timeout due to scan size - {} ports require at least {}s",
+                    num_ports, min_timeout_secs
+                );
+            }
         }
 
         Duration::from_secs(final_timeout)

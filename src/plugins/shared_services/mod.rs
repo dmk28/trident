@@ -14,17 +14,32 @@ use std::time::Duration;
 
 /// Initialize all shared services with default settings
 pub async fn init_shared_services() {
+    init_shared_services_with_verbose(false).await;
+}
+
+pub async fn init_shared_services_with_verbose(verbose: bool) {
     // Initialize database service with 5-minute cache
     init_database_service(Duration::from_secs(300)).await;
 
-    println!("🔧 Shared services initialized");
+    if verbose {
+        println!("🔧 Shared services initialized");
+    }
 }
 
 /// Initialize all shared services with custom settings
 pub async fn init_shared_services_with_config(database_cache_duration: Duration) {
+    init_shared_services_with_config_verbose(database_cache_duration, false).await;
+}
+
+pub async fn init_shared_services_with_config_verbose(
+    database_cache_duration: Duration,
+    verbose: bool,
+) {
     init_database_service(database_cache_duration).await;
 
-    println!("🔧 Shared services initialized with custom config");
+    if verbose {
+        println!("🔧 Shared services initialized with custom config");
+    }
 }
 
 #[cfg(test)]
