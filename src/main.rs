@@ -537,11 +537,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect();
 
         if !open_results.is_empty() {
+            println!("Host {}:", destination_ip);
             for result in &open_results {
-                println!("{}:{} open", destination_ip, result.port);
+                println!("port {}: open", result.port);
             }
+            println!(); // Add blank line after each host
         } else if args.verbose {
-            println!("No open ports found on {}", destination_ip);
+            println!("Host {}: No open ports found", destination_ip);
         }
 
         if args.verbose {
