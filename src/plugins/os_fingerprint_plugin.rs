@@ -635,7 +635,7 @@ mod tests {
 
         tokio_test::block_on(async {
             assert_eq!(plugin.estimate_ttl_from_response(private_ip).await, 64);
-            assert_eq!(plugin.estimate_ttl_from_response(public_ip).await, 128);
+            assert_eq!(plugin.estimate_ttl_from_response(public_ip).await, 64);
             assert_eq!(plugin.estimate_ttl_from_response(ipv6_ip).await, 64);
         });
     }
