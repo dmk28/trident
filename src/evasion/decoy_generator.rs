@@ -6,10 +6,11 @@ use pnet::packet::tcp::{MutableTcpPacket, TcpFlags};
 use pnet::util;
 use pnet_transport::{TransportChannelType, TransportSender, transport_channel};
 use rand::Rng;
+use rayon::prelude::*;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
@@ -37,64 +38,79 @@ pub enum ScanType {
 
 /// Decoy generator that creates and sends spoofed packets
 pub struct DecoyGenerator {
-    ipv4_sender: Option<TransportSender>,
-    ipv6_sender: Option<TransportSender>,
+    ipv4_sender: Arc<Mutex<Option<TransportSender>>>,
+    ipv6_sender: Arc<Mutex<Option<TransportSender>>>,
+    verbose: bool,
 }
 
 impl DecoyGenerator {
     /// Create a new decoy generator with raw socket capabilities
     pub fn new() -> Self {
-        // Try to create raw socket channels
-        let ipv4_sender = Self::create_ipv4_sender();
-        let ipv6_sender = Self::create_ipv6_sender();
+        Self::new_with_verbose(false)
+    }
 
-        if ipv4_sender.is_none() && ipv6_sender.is_none() {
+    /// Create a new decoy generator with verbose output control
+    pub fn new_with_verbose(verbose: bool) -> Self {
+        // Try to create raw socket channels
+        let ipv4_sender = Self::create_ipv4_sender(verbose);
+        let ipv6_sender = Self::create_ipv6_sender(verbose);
+
+        if ipv4_sender.is_none() && ipv6_sender.is_none() && verbose {
             eprintln!(
                 "⚠️  Warning: Could not create raw sockets. Decoy generation may require elevated privileges."
             );
         }
 
         Self {
-            ipv4_sender,
-            ipv6_sender,
+            ipv4_sender: Arc::new(Mutex::new(ipv4_sender)),
+            ipv6_sender: Arc::new(Mutex::new(ipv6_sender)),
+            verbose,
         }
     }
 
     /// Create IPv4 raw socket sender
-    fn create_ipv4_sender() -> Option<TransportSender> {
+    fn create_ipv4_sender(verbose: bool) -> Option<TransportSender> {
         match transport_channel(
             4096,
             TransportChannelType::Layer3(IpNextHeaderProtocols::Ipv4),
         ) {
             Ok((sender, _)) => {
-                println!("✅ IPv4 raw socket created successfully");
+                if verbose {
+                    println!("✅ IPv4 raw socket created successfully");
+                }
                 Some(sender)
             }
             Err(e) => {
-                eprintln!("❌ Failed to create IPv4 raw socket: {}", e);
+                if verbose {
+                    eprintln!("❌ Failed to create IPv4 raw socket: {}", e);
+                }
                 None
             }
         }
     }
 
     /// Create IPv6 raw socket sender
-    fn create_ipv6_sender() -> Option<TransportSender> {
+    fn create_ipv6_sender(verbose: bool) -> Option<TransportSender> {
         match transport_channel(
             4096,
             TransportChannelType::Layer3(IpNextHeaderProtocols::Ipv6),
         ) {
             Ok((sender, _)) => {
-                println!("✅ IPv6 raw socket created successfully");
+                if verbose {
+                    println!("✅ IPv6 raw socket created successfully");
+                }
                 Some(sender)
             }
             Err(e) => {
-                eprintln!("❌ Failed to create IPv6 raw socket: {}", e);
+                if verbose {
+                    eprintln!("❌ Failed to create IPv6 raw socket: {}", e);
+                }
                 None
             }
         }
     }
 
-    /// Generate and send decoy packets along with the real scan
+    /// Generate and send decoy packets along with the real scan using rayon for parallelization
     pub async fn send_decoy_scan(
         &mut self,
         real_source: IpAddr,
@@ -103,7 +119,6 @@ impl DecoyGenerator {
         decoy_ips: Vec<IpAddr>,
         scan_type: ScanType,
     ) -> Result<usize, Box<dyn std::error::Error>> {
-        let packets_sent = 0;
         let mut rng = rand::rng();
 
         // Create all packets (decoys + real)
@@ -135,173 +150,83 @@ impl DecoyGenerator {
         };
         all_packets.push((real_packet, true)); // true = real
 
-        let packets_sent = Arc::new(AtomicUsize::new(0));
-
-        // PARALLEL IMPLEMENTATION: Spawn concurrent tasks with semaphore control
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(5)); // Max 5 concurrent
-
-        let mut delays: Vec<(u64, u64)> = Vec::new();
-        for _ in 0..all_packets.len() {
-            delays.push((rng.random_range(50..=150), rng.random_range(1..=100)));
-        }
-
         // Randomize order to hide the real scan
         use rand::seq::SliceRandom;
         all_packets.shuffle(&mut rng);
 
-        // Create tasks for concurrent execution
-        let mut tasks = Vec::new();
+        // Use rayon for parallel packet sending
+        let packets_sent = Arc::new(AtomicUsize::new(0));
+        let verbose = self.verbose;
+        let ipv4_sender_arc = self.ipv4_sender.clone();
+        let ipv6_sender_arc = self.ipv6_sender.clone();
 
-        for (i, (packet, is_real)) in all_packets.into_iter().enumerate() {
-            let (sleep_delay, final_delay) = delays[i];
+        // Use rayon's parallel iterator for CPU-bound work
+        all_packets.par_iter().for_each(|(packet, is_real)| {
+            let packet_clone = packet.clone();
 
-            let sem = semaphore.clone();
-            let counter = packets_sent.clone();
+            // Add some random delay to each packet
+            let delay = rand::rng().random_range(10..=100);
+            std::thread::sleep(Duration::from_millis(delay));
 
-            let task = tokio::spawn(async move {
-                let _permit = sem.acquire().await.unwrap();
+            let send_result =
+                Self::send_packet_sync(&ipv4_sender_arc, &ipv6_sender_arc, &packet_clone);
 
-                // Simulate packet sending (placeholder for now)
-                tokio::time::sleep(Duration::from_millis(sleep_delay)).await;
-
-                counter.fetch_add(1, Ordering::Relaxed);
-
-                if is_real {
-                    println!(
-                        "🎯 Real scan packet sent from {} to {}:{}",
-                        packet.source_ip, packet.dest_ip, packet.dest_port
-                    );
-                } else {
-                    println!(
-                        "🥷 Decoy packet sent from {} to {}:{}",
-                        packet.source_ip, packet.dest_ip, packet.dest_port
-                    );
+            match send_result {
+                Ok(_) => {
+                    packets_sent.fetch_add(1, Ordering::Relaxed);
+                    if verbose {
+                        if *is_real {
+                            println!(
+                                "🎯 Real scan packet sent from {} to {}:{}",
+                                packet.source_ip, packet.dest_ip, packet.dest_port
+                            );
+                        } else {
+                            println!(
+                                "🥷 Decoy packet sent from {} to {}:{}",
+                                packet.source_ip, packet.dest_ip, packet.dest_port
+                            );
+                        }
+                    }
                 }
-
-                tokio::time::sleep(Duration::from_millis(final_delay)).await;
-            });
-
-            tasks.push(task);
-        }
-
-        // Wait for all tasks to complete
-        for task in tasks {
-            let _ = task.await;
-        }
+                Err(e) => {
+                    if verbose {
+                        eprintln!("❌ Failed to send packet from {}: {}", packet.source_ip, e);
+                    }
+                }
+            }
+        });
 
         let final_count = packets_sent.load(Ordering::Relaxed);
-
-        /* FALLBACK: Sequential implementation (commented out)
-        // Create all packets (decoys + real)
-        let mut all_packets = Vec::new();
-
-        // Add decoy packets
-        for decoy_ip in decoy_ips {
-            let source_port = Self::generate_random_port();
-            let packet = DecoyPacket {
-                source_ip: decoy_ip,
-                dest_ip: target,
-                source_port,
-                dest_port: target_port,
-                scan_type,
-                payload: Vec::new(),
-            };
-            all_packets.push((packet, false)); // false = decoy
-        }
-
-        // Add real packet
-        let real_source_port = Self::generate_random_port();
-        let real_packet = DecoyPacket {
-            source_ip: real_source,
-            dest_ip: target,
-            source_port: real_source_port,
-            dest_port: target_port,
-            scan_type,
-            payload: Vec::new(),
-        };
-        all_packets.push((real_packet, true)); // true = real
-
-        // Randomize order to hide the real scan
-        use rand::seq::SliceRandom;
-        all_packets.shuffle(&mut rng);
-
-        // Send all packets with random delays
-        for (packet, is_real) in all_packets {
-            match self.send_packet(&packet).await {
-                Ok(_) => {
-                    packets_sent += 1;
-                    if is_real {
-                        println!("🎯 Real scan packet sent from {} to {}:{}",
-                                packet.source_ip, packet.dest_ip, packet.dest_port);
-                    } else {
-                        println!("🥷 Decoy packet sent from {} to {}:{}",
-                                packet.source_ip, packet.dest_ip, packet.dest_port);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("❌ Failed to send packet from {}: {}", packet.source_ip, e);
-                }
-            }
-
-            // Random delay between packets (1-100ms)
-            let delay = rng.random_range(1..=100);
-            sleep(Duration::from_millis(delay)).await;
-        }
-        // Randomize order to hide the real scan
-        use rand::seq::SliceRandom;
-        all_packets.shuffle(&mut rng);
-
-        // Send all packets with random delays
-        for (packet, is_real) in all_packets {
-            match self.send_packet(&packet).await {
-                Ok(_) => {
-                    packets_sent += 1;
-                    if is_real {
-                        println!("🎯 Real scan packet sent from {} to {}:{}",
-                                packet.source_ip, packet.dest_ip, packet.dest_port);
-                    } else {
-                        println!("🥷 Decoy packet sent from {} to {}:{}",
-                                packet.source_ip, packet.dest_ip, packet.dest_port);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("❌ Failed to send packet from {}: {}", packet.source_ip, e);
-                }
-            }
-
-            // Random delay between packets (1-100ms)
-            let delay = rng.random_range(1..=100);
-            sleep(Duration::from_millis(delay)).await;
-        }
-        */
-
         Ok(final_count)
     }
 
-    /// Send a single packet using raw sockets
-    async fn send_packet(
-        &mut self,
+    /// Synchronous packet sending for use with rayon
+    fn send_packet_sync(
+        ipv4_sender: &Arc<Mutex<Option<TransportSender>>>,
+        ipv6_sender: &Arc<Mutex<Option<TransportSender>>>,
         packet: &DecoyPacket,
     ) -> Result<(), Box<dyn std::error::Error>> {
         match packet.source_ip {
             IpAddr::V4(src_ipv4) => {
-                if let Some(ref mut sender) = self.ipv4_sender {
+                let mut sender_guard = ipv4_sender.lock().unwrap();
+                if let Some(ref mut sender) = *sender_guard {
                     let dest_ipv4 = match packet.dest_ip {
                         IpAddr::V4(ip) => ip,
                         _ => return Err("IPv4 sender cannot send to IPv6 destination".into()),
                     };
-                    Self::send_ipv4_packet(sender, src_ipv4, dest_ipv4, packet).await
+                    Self::send_ipv4_packet(sender, src_ipv4, dest_ipv4, packet)
                 } else {
                     Err("IPv4 raw socket not available".into())
                 }
             }
             IpAddr::V6(src_ipv6) => {
-                if let Some(ref mut sender) = self.ipv6_sender {
+                let mut sender_guard = ipv6_sender.lock().unwrap();
+                if let Some(ref mut sender) = *sender_guard {
                     let dest_ipv6 = match packet.dest_ip {
                         IpAddr::V6(ip) => ip,
                         _ => return Err("IPv6 sender cannot send to IPv4 destination".into()),
                     };
-                    Self::send_ipv6_packet(sender, src_ipv6, dest_ipv6, packet).await
+                    Self::send_ipv6_packet(sender, src_ipv6, dest_ipv6, packet)
                 } else {
                     Err("IPv6 raw socket not available".into())
                 }
@@ -309,8 +234,16 @@ impl DecoyGenerator {
         }
     }
 
+    /// Send a single packet using raw sockets (for compatibility)
+    async fn send_packet(
+        &mut self,
+        packet: &DecoyPacket,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Self::send_packet_sync(&self.ipv4_sender, &self.ipv6_sender, packet)
+    }
+
     /// Send IPv4 packet with TCP header
-    async fn send_ipv4_packet(
+    fn send_ipv4_packet(
         sender: &mut TransportSender,
         src_ip: Ipv4Addr,
         dest_ip: Ipv4Addr,
@@ -382,7 +315,7 @@ impl DecoyGenerator {
     }
 
     /// Send IPv6 packet with TCP header
-    async fn send_ipv6_packet(
+    fn send_ipv6_packet(
         sender: &mut TransportSender,
         src_ip: Ipv6Addr,
         dest_ip: Ipv6Addr,
@@ -455,16 +388,18 @@ impl DecoyGenerator {
 
     /// Check if raw sockets are available
     pub fn is_available(&self) -> bool {
-        self.ipv4_sender.is_some() || self.ipv6_sender.is_some()
+        let ipv4_available = self.ipv4_sender.lock().unwrap().is_some();
+        let ipv6_available = self.ipv6_sender.lock().unwrap().is_some();
+        ipv4_available || ipv6_available
     }
 
     /// Get capabilities as a string for debugging
     pub fn capabilities(&self) -> String {
         let mut caps = Vec::new();
-        if self.ipv4_sender.is_some() {
+        if self.ipv4_sender.lock().unwrap().is_some() {
             caps.push("IPv4");
         }
-        if self.ipv6_sender.is_some() {
+        if self.ipv6_sender.lock().unwrap().is_some() {
             caps.push("IPv6");
         }
         if caps.is_empty() {
@@ -477,7 +412,9 @@ impl DecoyGenerator {
 
 impl Drop for DecoyGenerator {
     fn drop(&mut self) {
-        if self.ipv4_sender.is_some() || self.ipv6_sender.is_some() {
+        let ipv4_available = self.ipv4_sender.lock().unwrap().is_some();
+        let ipv6_available = self.ipv6_sender.lock().unwrap().is_some();
+        if (ipv4_available || ipv6_available) && self.verbose {
             println!("🔒 Raw socket resources cleaned up");
         }
     }
@@ -505,6 +442,7 @@ mod tests {
 
     #[test]
     fn test_port_generation() {
+        // Test that generated ports are in ephemeral range
         for _ in 0..100 {
             let port = DecoyGenerator::generate_random_port();
             assert!(port >= 32768);

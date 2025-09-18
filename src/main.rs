@@ -468,19 +468,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("🔧 Using fixed source port: {}", args.source_port.unwrap());
                         }
                     }
-                    if args.ipv6_decoys {
+                    if args.ipv6_decoys && args.verbose {
                         println!("🌐 IPv6 decoys enabled");
                     }
-                    EvasiveScannerWrapper::new_with_evasion_and_spoofing(
+                    EvasiveScannerWrapper::new_with_evasion_and_spoofing_verbose(
                         config,
                         evasion_config.clone(),
                         port_spoofing_config.clone(),
+                        args.verbose,
                     )
                 } else {
                     if args.verbose {
                         println!("🚀 Starting SYN scan...");
                     }
-                    EvasiveScannerWrapper::new(config)
+                    EvasiveScannerWrapper::new_verbose(config, args.verbose)
                 };
 
                 scanner.scan().await?;

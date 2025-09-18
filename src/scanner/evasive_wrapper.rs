@@ -12,26 +12,42 @@ pub struct EvasiveScannerWrapper {
     port_spoofer: Option<PortSpoofer>,
     evasion_enabled: bool,
     spoofing_enabled: bool,
+    verbose: bool,
 }
 
 impl EvasiveScannerWrapper {
     /// Create a new evasive scanner without evasion
     pub fn new(config: ScanConfig) -> Self {
+        Self::new_verbose(config, false)
+    }
+
+    /// Create a new evasive scanner without evasion with verbose control
+    pub fn new_verbose(config: ScanConfig, verbose: bool) -> Self {
         Self {
             scanner: SynScanner::new(config),
             evasion_engine: None,
             port_spoofer: None,
             evasion_enabled: false,
             spoofing_enabled: false,
+            verbose,
         }
     }
 
     /// Create a new evasive scanner with evasion capabilities
     pub fn new_with_evasion(config: ScanConfig, evasion_config: EvasionConfig) -> Self {
-        let evasion_engine = EvasionEngine::new(evasion_config);
+        Self::new_with_evasion_verbose(config, evasion_config, false)
+    }
+
+    /// Create a new evasive scanner with evasion capabilities and verbose control
+    pub fn new_with_evasion_verbose(
+        config: ScanConfig,
+        evasion_config: EvasionConfig,
+        verbose: bool,
+    ) -> Self {
+        let evasion_engine = EvasionEngine::new_with_verbose(evasion_config, verbose);
         let evasion_enabled = evasion_engine.has_raw_socket_capability();
 
-        if !evasion_enabled {
+        if !evasion_enabled && verbose {
             eprintln!("⚠️  Warning: Raw socket capabilities not available. Evasion disabled.");
             eprintln!("   Run with sudo for full evasion capabilities.");
         }
@@ -42,6 +58,7 @@ impl EvasiveScannerWrapper {
             port_spoofer: None,
             evasion_enabled,
             spoofing_enabled: false,
+            verbose,
         }
     }
 
@@ -51,10 +68,25 @@ impl EvasiveScannerWrapper {
         evasion_config: EvasionConfig,
         port_spoofing_config: Option<PortSpoofingConfig>,
     ) -> Self {
-        let mut evasion_engine = EvasionEngine::new(evasion_config);
+        Self::new_with_evasion_and_spoofing_verbose(
+            config,
+            evasion_config,
+            port_spoofing_config,
+            false,
+        )
+    }
+
+    /// Create a new evasive scanner with both evasion and port spoofing capabilities and verbose control
+    pub fn new_with_evasion_and_spoofing_verbose(
+        config: ScanConfig,
+        evasion_config: EvasionConfig,
+        port_spoofing_config: Option<PortSpoofingConfig>,
+        verbose: bool,
+    ) -> Self {
+        let mut evasion_engine = EvasionEngine::new_with_verbose(evasion_config, verbose);
         let evasion_enabled = evasion_engine.has_raw_socket_capability();
 
-        if !evasion_enabled {
+        if !evasion_enabled && verbose {
             eprintln!("⚠️  Warning: Raw socket capabilities not available. Evasion disabled.");
             eprintln!("   Run with sudo for full evasion capabilities.");
         }
@@ -71,6 +103,7 @@ impl EvasiveScannerWrapper {
             port_spoofer,
             evasion_enabled,
             spoofing_enabled,
+            verbose,
         }
     }
 
@@ -85,10 +118,10 @@ impl EvasiveScannerWrapper {
 
     /// Perform scan with evasion techniques and port spoofing
     async fn scan_with_evasion_and_spoofing(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if self.evasion_enabled {
+        if self.evasion_enabled && self.verbose {
             println!("🥷 Starting evasion-enabled scan...");
         }
-        if self.spoofing_enabled {
+        if self.spoofing_enabled && self.verbose {
             println!("🔧 Starting port-spoofing scan...");
         }
 
@@ -100,33 +133,39 @@ impl EvasiveScannerWrapper {
 
         // Port spoofing preparation
         if let Some(ref mut port_spoofer) = self.port_spoofer {
-            println!("🔧 Port spoofing configuration:");
-            let config = port_spoofer.get_config();
-            println!("   Strategy: {:?}", config.strategy);
-            println!("   Trusted ports: {:?}", port_spoofer.get_trusted_ports());
+            if self.verbose {
+                println!("🔧 Port spoofing configuration:");
+                let config = port_spoofer.get_config();
+                println!("   Strategy: {:?}", config.strategy);
+                println!("   Trusted ports: {:?}", port_spoofer.get_trusted_ports());
 
-            // Show recommended ports for each target
-            for &port in &ports {
-                let suggested_port = port_spoofer.suggest_optimal_port(port);
-                println!(
-                    "   Port {} -> suggested source port {} ({})",
-                    port,
-                    suggested_port,
-                    crate::evasion::PortSpoofer::get_service_name(suggested_port)
-                );
+                // Show recommended ports for each target
+                for &port in &ports {
+                    let suggested_port = port_spoofer.suggest_optimal_port(port);
+                    println!(
+                        "   Port {} -> suggested source port {} ({})",
+                        port,
+                        suggested_port,
+                        crate::evasion::PortSpoofer::get_service_name(suggested_port)
+                    );
+                }
             }
         }
 
         // Evasion (decoy) phase
         if let Some(ref mut evasion_engine) = self.evasion_engine {
-            println!(
-                "🎯 Evasion capabilities: {}",
-                evasion_engine.capabilities_info()
-            );
+            if self.verbose {
+                println!(
+                    "🎯 Evasion capabilities: {}",
+                    evasion_engine.capabilities_info()
+                );
+            }
 
             // For each port, send decoy traffic before the real scan
             for &port in &ports {
-                println!("🔍 Scanning port {} with evasion...", port);
+                if self.verbose {
+                    println!("🔍 Scanning port {} with evasion...", port);
+                }
 
                 match evasion_engine
                     .execute_decoy_scan(source_ip, target_ip, port, ScanType::TcpSyn)
@@ -134,26 +173,30 @@ impl EvasiveScannerWrapper {
                 {
                     Ok(evasion_result) => {
                         // Print result inline to avoid borrowing conflict
-                        if evasion_result.real_scan_sent {
-                            println!(
-                                "  ✅ Port {}: Real packet sent + {} decoy packets",
-                                port, evasion_result.decoys_sent
-                            );
-                        } else {
-                            println!(
-                                "  ⚠️  Port {}: Real packet failed, {} decoys attempted",
-                                port, evasion_result.decoys_sent
-                            );
-                        }
+                        if self.verbose {
+                            if evasion_result.real_scan_sent {
+                                println!(
+                                    "  ✅ Port {}: Real packet sent + {} decoy packets",
+                                    port, evasion_result.decoys_sent
+                                );
+                            } else {
+                                println!(
+                                    "  ⚠️  Port {}: Real packet failed, {} decoys attempted",
+                                    port, evasion_result.decoys_sent
+                                );
+                            }
 
-                        if !evasion_result.errors.is_empty() {
-                            for error in &evasion_result.errors {
-                                eprintln!("⚠️  Evasion warning: {}", error);
+                            if !evasion_result.errors.is_empty() {
+                                for error in &evasion_result.errors {
+                                    eprintln!("⚠️  Evasion warning: {}", error);
+                                }
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("❌ Evasion failed for port {}: {}", port, e);
+                        if self.verbose {
+                            eprintln!("❌ Evasion failed for port {}: {}", port, e);
+                        }
                     }
                 }
 
@@ -164,7 +207,9 @@ impl EvasiveScannerWrapper {
                 .await;
             }
 
-            println!("🎯 Decoy phase complete. Running main scan...");
+            if self.verbose {
+                println!("🎯 Decoy phase complete. Running main scan...");
+            }
         }
 
         // Run the actual scanner with potential port spoofing modifications
@@ -174,25 +219,31 @@ impl EvasiveScannerWrapper {
 
         // Report port spoofing usage if enabled
         if let Some(ref port_spoofer) = self.port_spoofer {
-            println!("🔧 Port spoofing statistics:");
-            let usage_stats = port_spoofer.get_usage_stats();
-            for (&port, &count) in usage_stats.iter() {
-                println!(
-                    "   Source port {} used {} times ({})",
-                    port,
-                    count,
-                    crate::evasion::PortSpoofer::get_service_name(port)
-                );
+            if self.verbose {
+                println!("🔧 Port spoofing statistics:");
+                let usage_stats = port_spoofer.get_usage_stats();
+                for (&port, &count) in usage_stats.iter() {
+                    println!(
+                        "   Source port {} used {} times ({})",
+                        port,
+                        count,
+                        crate::evasion::PortSpoofer::get_service_name(port)
+                    );
+                }
             }
         }
 
-        println!("✅ Evasive scan completed successfully!");
+        if self.verbose {
+            println!("✅ Evasive scan completed successfully!");
+        }
         Ok(())
     }
 
     /// Perform regular scan without evasion
     fn scan_without_evasion(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        println!("🔍 Starting regular scan (no evasion)...");
+        if self.verbose {
+            println!("🔍 Starting regular scan (no evasion)...");
+        }
         self.scanner.scan()
     }
 
@@ -257,6 +308,22 @@ impl EvasiveScannerWrapper {
     pub fn set_evasion_config(&mut self, config: EvasionConfig) -> Result<(), String> {
         if self.evasion_engine.is_some() {
             let new_engine = EvasionEngine::new(config);
+            self.evasion_enabled = new_engine.has_raw_socket_capability();
+            self.evasion_engine = Some(new_engine);
+            Ok(())
+        } else {
+            Err("No evasion engine configured".to_string())
+        }
+    }
+
+    /// Set a custom evasion configuration with verbose control
+    pub fn set_evasion_config_verbose(
+        &mut self,
+        config: EvasionConfig,
+        verbose: bool,
+    ) -> Result<(), String> {
+        if self.evasion_engine.is_some() {
+            let new_engine = EvasionEngine::new_with_verbose(config, verbose);
             self.evasion_enabled = new_engine.has_raw_socket_capability();
             self.evasion_engine = Some(new_engine);
             Ok(())

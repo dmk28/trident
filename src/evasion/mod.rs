@@ -52,8 +52,12 @@ pub struct EvasionEngine {
 
 impl EvasionEngine {
     pub fn new(config: EvasionConfig) -> Self {
+        Self::new_with_verbose(config, false)
+    }
+
+    pub fn new_with_verbose(config: EvasionConfig, verbose: bool) -> Self {
         Self {
-            decoy_generator: DecoyGenerator::new(),
+            decoy_generator: DecoyGenerator::new_with_verbose(verbose),
             config,
         }
     }
